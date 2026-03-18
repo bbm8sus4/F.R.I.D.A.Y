@@ -1,0 +1,13 @@
+name = "my-ai-bot"
+main = "src/index.js"
+compatibility_date = "2024-12-01"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "my-ai-bot-db"
+database_id = "cecf8fa2-a44c-4605-ab9e-e726f3c1e0b4"
+migrations_dir = "migrations"
+
+# Cron Trigger — เช็คงานค้าง/แจ้งเตือนบอสทุก 3 ชม.
+[triggers]
+crons = ["0 */3 * * *"]

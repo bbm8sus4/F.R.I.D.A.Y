@@ -1,0 +1,12 @@
+{
+  "name": "my-ai-bot",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "db:migrate": "wrangler d1 migrations apply my-ai-bot-db",
+    "db:migrate:local": "wrangler d1 migrations apply my-ai-bot-db --local",
+    "tail": "wrangler tail"
+  }
+}
