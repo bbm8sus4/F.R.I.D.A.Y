@@ -15,6 +15,7 @@ const MAX_PDF_SIZE = 10 * 1024 * 1024; // 10MB
 
 // ===== Helper: ตรวจจับการแท็กบอสในกลุ่ม =====
 function detectBossMention(message, bossId, bossUsername) {
+  // 1. Telegram entity mentions (text_mention + @username)
   const entities = message.entities || message.caption_entities || [];
   for (const e of entities) {
     if (e.type === "text_mention" && e.user?.id === bossId) return true;
@@ -24,6 +25,15 @@ function detectBossMention(message, bossId, bossUsername) {
       if (mentioned.toLowerCase() === bossUsername.toLowerCase()) return true;
     }
   }
+
+  // 2. Reply to boss's message
+  if (message.reply_to_message?.from?.id === bossId) return true;
+
+  // 3. Keyword mention — ชื่อเล่น/คำเรียกบอส
+  const text = (message.text || message.caption || "").toLowerCase();
+  const bossNicknames = ["บ๊อบ", "บ๊อบบี้", "จารย์บ๊อบ", "พี่บ๊อบ", "ครับบ๊อบ", "บ๊อบครับ", "พ่อใหญ่บ๊อบ", "bob"];
+  if (bossNicknames.some(nick => text.includes(nick.toLowerCase()))) return true;
+
   return false;
 }
 
@@ -74,6 +84,10 @@ export default {
         }
         if (callbackQuery.data?.startsWith("send:")) {
           ctx.waitUntil(handleSendCallback(env, callbackQuery));
+          return new Response("OK", { status: 200 });
+        }
+        if (callbackQuery.data?.startsWith("pa:")) {
+          ctx.waitUntil(handleProactiveAlertCallback(env, callbackQuery));
           return new Response("OK", { status: 200 });
         }
       }
@@ -132,10 +146,17 @@ export default {
 
       // แจ้งเตือนบอสเมื่อมีคนแท็กในกลุ่ม
       if (!isDM && !isBoss && detectBossMention(message, bossId, env.BOSS_USERNAME)) {
-        const who = message.from.first_name || message.from.username || "ไม่ทราบชื่อ";
-        const group = message.chat.title || "กลุ่มไม่ทราบชื่อ";
-        const alert = `มีคนแท็กนายค่ะ!\n\n👤 ${who}\n💬 กลุ่ม: ${group}\n📝 "${text}"`;
-        ctx.waitUntil(sendTelegram(env, bossId, alert, null));
+        const esc = s => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+        const who = esc(message.from.first_name || message.from.username || "ไม่ทราบชื่อ");
+        const group = esc(message.chat.title || "กลุ่มไม่ทราบชื่อ");
+        const alert = `มีคนแท็กนายค่ะ!\n\n👤 ${who}\n💬 กลุ่ม: ${group}\n📝 "${esc(text)}"`;
+        const mentionChatId = message.chat.id;
+        ctx.waitUntil(sendTelegramWithKeyboard(env, bossId, alert, null, [
+          [
+            { text: "📋 วิเคราะห์สั้น", callback_data: `pa:s:${mentionChatId}` },
+            { text: "📝 วิเคราะห์ละเอียด", callback_data: `pa:d:${mentionChatId}` },
+          ],
+        ]));
       }
 
       // บอสเท่านั้นที่สั่งได้ทุกอย่าง คนอื่นแค่ถูกเก็บข้อมูล
@@ -1996,8 +2017,18 @@ async function handleSendCallback(env, callbackQuery) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ chat_id: targetChatId, text: messageToSend }),
     });
-    const sendOk = sendRes.ok;
-    if (!sendOk) console.error("send approve error:", await sendRes.text());
+    let sendOk = false;
+    if (sendRes.ok) {
+      try {
+        const sendResult = await sendRes.json();
+        if (sendResult.ok) {
+          sendOk = true;
+          await trackBotMessage(env, targetChatId, sendResult.result.message_id, messageToSend);
+        }
+      } catch (e) { /* ignore */ }
+    } else {
+      console.error("send approve error:", await sendRes.text());
+    }
     // Remove inline buttons from preview
     await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/editMessageReplyMarkup`, {
       method: "POST",
@@ -2621,7 +2652,7 @@ async function handleMemoriesCommand(env, message) {
       reply += `#${m.id} ${emoji} ${m.priority} [${m.category}]\n${m.content}\nเมื่อ: ${m.created_at}\n\n`;
     }
     reply += "🔴 hot = ใช้ทุกครั้ง | 🟡 warm = ดึงเมื่อเกี่ยวข้อง | 🔵 cold = เก็บถาวร\n";
-    reply += "/cooldown <id> ลดระดับ | /heatup <id> เพิ่มระดับ | /forget <id> ลบ";
+    reply += "/cooldown <id> ลดระดับ | /heatup <id> เพิ่มระดับ | /forget <id ...> ลบ";
 
     await sendTelegram(env, message.chat.id, reply, message.message_id);
   } catch (err) {
@@ -2673,18 +2704,133 @@ async function handleHeatupCommand(env, message, args) {
 
 async function handleForgetCommand(env, message, args) {
   try {
-    const id = args.trim();
-    if (!id || isNaN(id)) {
-      await sendTelegram(env, message.chat.id, "Usage: /forget <id>", message.message_id);
+    const ids = args.trim().split(/[\s,]+/).filter(s => s && !isNaN(s)).map(Number);
+    if (ids.length === 0) {
+      await sendTelegram(env, message.chat.id, "Usage: /forget <id> [id2 id3 ...]", message.message_id);
       return;
     }
+    const placeholders = ids.map(() => "?").join(",");
     await env.DB
-      .prepare(`DELETE FROM memories WHERE id = ?`)
-      .bind(Number(id))
+      .prepare(`DELETE FROM memories WHERE id IN (${placeholders})`)
+      .bind(...ids)
       .run();
-    await sendTelegram(env, message.chat.id, `ลบความจำ #${id} แล้วค่ะนาย`, message.message_id);
+    const label = ids.map(id => `#${id}`).join(" ");
+    await sendTelegram(env, message.chat.id, `ลบความจำ ${label} แล้วค่ะนาย`, message.message_id);
   } catch (err) {
     console.error("handleForgetCommand error:", err);
+  }
+}
+
+// ===== Proactive Alert Callback Handler (pa:*) =====
+
+async function handleProactiveAlertCallback(env, callbackQuery) {
+  const chatId = callbackQuery.message.chat.id;
+  const messageId = callbackQuery.message.message_id;
+
+  // Parse callback data: "pa:<mode>:<groupChatId>"
+  const parts = callbackQuery.data.split(":");
+  const mode = parts[1]; // s = short, d = detail
+  const groupChatId = Number(parts[2]);
+
+  const modeLabels = { s: "วิเคราะห์สั้น", d: "วิเคราะห์ละเอียด" };
+
+  // Answer callback query (toast)
+  await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/answerCallbackQuery`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      callback_query_id: callbackQuery.id,
+      text: "⏳ กำลังวิเคราะห์...",
+    }),
+  });
+
+  // Escape original text for HTML
+  const originalText = (callbackQuery.message.text || "")
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+  // Helper: editMessageText
+  const editPreview = async (html) => {
+    const res = await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/editMessageText`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chat_id: chatId,
+        message_id: messageId,
+        text: sanitizeHtml(html),
+        parse_mode: "HTML",
+        link_preview_options: { is_disabled: true },
+        reply_markup: { inline_keyboard: [] },
+      }),
+    });
+    if (!res.ok) {
+      console.error("pa editPreview failed:", await res.text());
+    }
+    return res.ok;
+  };
+
+  // Update preview: กำลังวิเคราะห์ + ลบปุ่ม
+  const editOk = await editPreview(`${originalText}\n\n⏳ <b>กำลัง${modeLabels[mode]}...</b>`);
+  if (!editOk) return;
+
+  try {
+    // Fetch recent messages จากกลุ่มนั้น
+    const { results: recentMsgs } = await env.DB
+      .prepare(
+        `SELECT username, first_name, message_text, chat_title,
+                datetime(created_at, '+7 hours') as created_at
+         FROM messages
+         WHERE chat_id = ? AND created_at > datetime('now', '-6 hours')
+         ORDER BY created_at ASC LIMIT 200`
+      )
+      .bind(groupChatId)
+      .all();
+
+    if (recentMsgs.length === 0) {
+      await editPreview(`${originalText}\n\n❌ <b>ไม่พบข้อความล่าสุดในกลุ่มนี้</b>`);
+      return;
+    }
+
+    const groupTitle = recentMsgs[0].chat_title || "Unknown";
+    let conversation = "";
+    for (const msg of recentMsgs) {
+      const name = msg.username ? `@${msg.username}` : msg.first_name || "Unknown";
+      conversation += `[${msg.created_at}] ${name}: ${msg.message_text}\n`;
+    }
+
+    const alertText = callbackQuery.message.text || "";
+    const depthInstruction = mode === "s"
+      ? "วิเคราะห์สั้นกระชับ 3-5 ประโยค พร้อมแนะนำคำตอบ/แนวทางสั้นๆ ที่นายสามารถตอบกลับได้ทันที"
+      : "วิเคราะห์ละเอียดครบทุกมิติ รวมถึงบริบท สาเหตุ ผลกระทบ ความเสี่ยง และแนะนำคำตอบ/แนวทางที่เหมาะสมให้นายพร้อมเหตุผล";
+
+    const noIntro = "[คำสั่งสำคัญ: ห้ามขึ้นต้นด้วย 'รับทราบ' 'สรุปให้ดังนี้' หรือเกริ่นนำใดๆ — เริ่มเนื้อหาทันที]";
+    const prompt = `${noIntro}
+จาก Proactive Alert ที่แจ้งเตือนเรื่องนี้:
+"${alertText}"
+
+กลุ่ม: ${groupTitle}
+
+${depthInstruction}
+
+โครงสร้างคำตอบ:
+1. วิเคราะห์สถานการณ์ — เกิดอะไรขึ้น ใครเกี่ยวข้อง
+2. ประเมินความสำคัญ/ความเร่งด่วน
+3. แนะนำคำตอบ — ข้อความที่นายสามารถตอบกลับในกลุ่มได้เลย (ให้ครบ 4 ตัวเลือกเสมอ โทนต่างกัน เช่น ทางการ/เป็นกันเอง/สั้นกระชับ/ถามกลับ)
+4. แนวทางถัดไป — ควรทำอะไรต่อ
+
+บทสนทนาล่าสุดในกลุ่ม:
+${conversation}`;
+
+    await sendTyping(env, chatId);
+    const context = await getSmartContext(env.DB, groupChatId, false, "");
+    const reply = await askGemini(env, prompt, context, null);
+    const { cleanReply } = await parseAndExecuteActions(env, reply);
+    if (cleanReply) {
+      await sendTelegram(env, chatId, cleanReply, null, true);
+    }
+    await editPreview(`${originalText}\n\n✅ <b>${modeLabels[mode]}แล้ว</b>`);
+  } catch (err) {
+    console.error("handleProactiveAlertCallback error:", err.message, err.stack);
+    await editPreview(`${originalText}\n\n❌ <b>เกิดข้อผิดพลาด</b> — ลองใหม่ภายหลังค่ะ`);
   }
 }
 
@@ -2743,6 +2889,12 @@ async function proactiveInsightAlert(env) {
       const key = msg.chat_id;
       if (!byGroup[key]) byGroup[key] = { title: msg.chat_title, msgs: [] };
       byGroup[key].msgs.push(msg);
+    }
+
+    // สร้าง mapping title → chat_id สำหรับ inline buttons
+    const titleToChatId = {};
+    for (const [cid, g] of Object.entries(byGroup)) {
+      titleToChatId[g.title] = cid;
     }
 
     let messageContext = "";
@@ -2836,8 +2988,20 @@ ALERT|💡|sarah|ลูกค้ารายใหม่ต้องการ de
       const summary = parts[3].trim();
       const group = parts[4].trim();
 
-      const alertMsg = `${emoji} Proactive Alert\n\n${emoji} ${who}: ${summary}\n\n📁 กลุ่ม: ${group}`;
-      await sendTelegram(env, bossId, alertMsg, null);
+      const groupChatId = titleToChatId[group];
+      if (groupChatId) {
+        const esc = s => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+        const alertMsg = `${emoji} Proactive Alert\n\n${emoji} ${esc(who)}: ${esc(summary)}\n\n📁 กลุ่ม: ${esc(group)}`;
+        await sendTelegramWithKeyboard(env, bossId, alertMsg, null, [
+          [
+            { text: "📋 วิเคราะห์สั้น", callback_data: `pa:s:${groupChatId}` },
+            { text: "📝 วิเคราะห์ละเอียด", callback_data: `pa:d:${groupChatId}` },
+          ],
+        ]);
+      } else {
+        const alertMsg = `${emoji} Proactive Alert\n\n${emoji} ${who}: ${summary}\n\n📁 กลุ่ม: ${group}`;
+        await sendTelegram(env, bossId, alertMsg, null);
+      }
     }
   } catch (err) {
     console.error("Proactive insight alert error:", err);
