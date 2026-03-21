@@ -216,7 +216,19 @@ export default {
           return new Response("OK", { status: 200 });
         }
 
-        // Handle send reply
+        // Handle send reply — lookup target from DB, fallback to old [send:] tag
+        if (message.reply_to_message.text.startsWith('📨 สั่ง AI')) {
+          try {
+            const pending = await env.DB.prepare(
+              `SELECT target_chat_id FROM pending_sends WHERE user_id = ?`
+            ).bind(message.chat.id).first();
+            if (pending) {
+              await env.DB.prepare(`DELETE FROM pending_sends WHERE user_id = ?`).bind(message.chat.id).run();
+              ctx.waitUntil(handleSendReply(env, message, pending.target_chat_id, text));
+              return new Response("OK", { status: 200 });
+            }
+          } catch (e) { /* table might not exist yet */ }
+        }
         const sendMatch = message.reply_to_message.text.match(/\[send:(-?\d+)\]/);
         if (sendMatch) {
           ctx.waitUntil(handleSendReply(env, message, sendMatch[1], text));
@@ -2020,12 +2032,17 @@ async function handleSendCallback(env, callbackQuery) {
     const groupName = row?.chat_title || `Group ${targetChatId}`;
 
     const chatId = callbackQuery.message.chat.id;
+
+    // Store target in DB so we don't need to embed ugly tag in message
+    await env.DB.prepare(`CREATE TABLE IF NOT EXISTS pending_sends (user_id INTEGER PRIMARY KEY, target_chat_id TEXT, created_at TEXT DEFAULT (datetime('now')))`).run();
+    await env.DB.prepare(`INSERT OR REPLACE INTO pending_sends (user_id, target_chat_id) VALUES (?, ?)`).bind(chatId, targetChatId).run();
+
     await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         chat_id: chatId,
-        text: `📨 สั่ง AI ว่าต้องการส่งอะไรไปยัง "${groupName}" (reply ข้อความนี้ค่ะนาย)\n\n[send:${targetChatId}]`,
+        text: `📨 สั่ง AI ว่าต้องการส่งอะไรไปยัง "${groupName}" (reply ข้อความนี้ค่ะนาย)`,
         reply_markup: { force_reply: true, selective: true },
       }),
     });
