@@ -1976,6 +1976,15 @@ async function handleSendCallback(env, callbackQuery) {
   const action = parts[1]; // "g"
   const targetChatId = parts.slice(2).join(":"); // handle negative chat IDs
 
+  const REPLY_KB = {
+    keyboard: [
+      [{ text: "📋 Pending" }, { text: "🧠 Memories" }],
+      [{ text: "📨 Send" }, { text: "🗑 Delete" }],
+    ],
+    resize_keyboard: true,
+    is_persistent: true,
+  };
+
   if (action === "a") {
     // Approve: extract message from preview and send to group
     const fullText = callbackQuery.message.text || "";
@@ -1989,13 +1998,24 @@ async function handleSendCallback(env, callbackQuery) {
     });
     const sendOk = sendRes.ok;
     if (!sendOk) console.error("send approve error:", await sendRes.text());
-    await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/editMessageText`, {
+    // Remove inline buttons from preview
+    await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/editMessageReplyMarkup`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         chat_id: callbackQuery.message.chat.id,
         message_id: callbackQuery.message.message_id,
+        reply_markup: { inline_keyboard: [] },
+      }),
+    });
+    // Send confirmation + restore reply keyboard
+    await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chat_id: callbackQuery.message.chat.id,
         text: sendOk ? "✅ ส่งแล้วค่ะนาย" : "❌ ส่งไม่สำเร็จ",
+        reply_markup: REPLY_KB,
       }),
     });
     await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/answerCallbackQuery`, {
@@ -2007,14 +2027,24 @@ async function handleSendCallback(env, callbackQuery) {
   }
 
   if (action === "r") {
-    // Reject: cancel sending
-    await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/editMessageText`, {
+    // Reject: remove inline buttons from preview
+    await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/editMessageReplyMarkup`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         chat_id: callbackQuery.message.chat.id,
         message_id: callbackQuery.message.message_id,
+        reply_markup: { inline_keyboard: [] },
+      }),
+    });
+    // Send confirmation + restore reply keyboard
+    await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chat_id: callbackQuery.message.chat.id,
         text: "❌ ยกเลิกแล้วค่ะนาย",
+        reply_markup: REPLY_KB,
       }),
     });
     await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/answerCallbackQuery`, {
