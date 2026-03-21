@@ -1927,6 +1927,7 @@ async function handleDeleteCommand(env, message) {
     const buttons = results.map((r) => [
       { text: titleMap[r.chat_id] || `Group ${r.chat_id}`, callback_data: `del:g:${r.chat_id}` },
     ]);
+    buttons.push([{ text: "🗑 ลบทั้งหมดทุกกลุ่ม", callback_data: "del:aa" }]);
     await sendTelegramWithKeyboard(env, message.chat.id, "🗑 เลือกกลุ่มที่ต้องการลบข้อความของ Friday:", message.message_id, buttons);
   } catch (err) {
     console.error("handleDeleteCommand error:", err);
@@ -1949,6 +1950,8 @@ async function handleDeleteCallback(env, callbackQuery) {
     } else if (action === "a") {
       const targetChatId = parts[2];
       await executeDeleteAll(env, callbackQuery, targetChatId);
+    } else if (action === "aa") {
+      await executeDeleteAllGroups(env, callbackQuery);
     } else if (action === "b") {
       await showGroupList(env, callbackQuery);
     }
@@ -2063,6 +2066,7 @@ async function showGroupList(env, callbackQuery) {
   const buttons = results.map((r) => [
     { text: titleMap[r.chat_id] || `Group ${r.chat_id}`, callback_data: `del:g:${r.chat_id}` },
   ]);
+  buttons.push([{ text: "🗑 ลบทั้งหมดทุกกลุ่ม", callback_data: "del:aa" }]);
   await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/editMessageText`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -2192,6 +2196,76 @@ async function executeDeleteAll(env, callbackQuery, targetChatId) {
       message_id: messageId,
       text: `🗑 ลบเสร็จแล้วค่ะนาย\n✅ ลบสำเร็จ: ${deleted}\n${failed > 0 ? `❌ ลบไม่ได้: ${failed} (อาจเก่าเกิน 48 ชม.)` : ""}`,
       reply_markup: { inline_keyboard: [[{ text: "⬅️ กลับ", callback_data: "del:b" }]] },
+    }),
+  });
+}
+
+async function executeDeleteAllGroups(env, callbackQuery) {
+  const chatId = callbackQuery.message.chat.id;
+  const messageId = callbackQuery.message.message_id;
+
+  // ดึงข้อความทั้งหมดของ Friday จากทุกกลุ่ม
+  const { results } = await env.DB
+    .prepare(
+      `SELECT chat_id, message_id FROM bot_messages
+       WHERE created_at > datetime('now', '-48 hours')`
+    )
+    .all();
+
+  if (!results.length) {
+    await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/answerCallbackQuery`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        callback_query_id: callbackQuery.id,
+        text: "ไม่มีข้อความให้ลบค่ะนาย",
+        show_alert: true,
+      }),
+    });
+    return;
+  }
+
+  // อัพเดทสถานะ
+  await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/editMessageText`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      chat_id: chatId,
+      message_id: messageId,
+      text: `🗑 กำลังลบข้อความของ Friday ทั้งหมด ${results.length} ข้อความจากทุกกลุ่ม...`,
+      reply_markup: { inline_keyboard: [] },
+    }),
+  });
+
+  let deleted = 0;
+  let failed = 0;
+  for (const row of results) {
+    const res = await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/deleteMessage`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chat_id: row.chat_id, message_id: row.message_id }),
+    });
+    const result = await res.json();
+    if (result.ok) {
+      deleted++;
+    } else {
+      failed++;
+    }
+  }
+
+  // ลบจาก DB
+  await env.DB
+    .prepare(`DELETE FROM bot_messages WHERE created_at > datetime('now', '-48 hours')`)
+    .run();
+
+  await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/editMessageText`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      chat_id: chatId,
+      message_id: messageId,
+      text: `🗑 ลบเสร็จแล้วค่ะนาย\n✅ ลบสำเร็จ: ${deleted}\n${failed > 0 ? `❌ ลบไม่ได้: ${failed} (อาจเก่าเกิน 48 ชม.)` : ""}`,
+      reply_markup: { inline_keyboard: [] },
     }),
   });
 }
