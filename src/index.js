@@ -1153,9 +1153,29 @@ async function getRecentPhoto(env, chatId, currentMsgId) {
 async function handleReadhtmlCommand(env, message, args) {
   try {
     const htmlMime = "text/html";
-    const doc = message.document?.mime_type === htmlMime
+
+    // Debug: log document info
+    console.log("readhtml DEBUG:", JSON.stringify({
+      hasDoc: !!message.document,
+      docMime: message.document?.mime_type,
+      docName: message.document?.file_name,
+      hasReply: !!message.reply_to_message,
+      replyDoc: !!message.reply_to_message?.document,
+      replyMime: message.reply_to_message?.document?.mime_type,
+      replyName: message.reply_to_message?.document?.file_name,
+    }));
+
+    // ตรวจจาก mime_type หรือนามสกุลไฟล์ .html/.htm
+    const isHtmlDoc = (doc) => {
+      if (!doc) return false;
+      if (doc.mime_type === htmlMime) return true;
+      const name = (doc.file_name || "").toLowerCase();
+      return name.endsWith(".html") || name.endsWith(".htm");
+    };
+
+    const doc = isHtmlDoc(message.document)
       ? message.document
-      : message.reply_to_message?.document?.mime_type === htmlMime
+      : isHtmlDoc(message.reply_to_message?.document)
         ? message.reply_to_message.document
         : null;
 
