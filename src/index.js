@@ -2063,7 +2063,7 @@ async function handleSendReply(env, message, targetChatId, msgText) {
         .replace(/\[FORGET:\d+\]/g, '')
         // Strip Gemini grounding citation links (• <a href="vertexaisearch...">domain</a>)
         .replace(/[•*\-]?\s*<a\s+href="https?:\/\/vertexaisearch\.cloud\.google\.com\/[^"]*">[^<]*<\/a>/g, '')
-    ).replace(/\n{3,}/g, '\n\n').trim();
+    ).replace(/\n*\s*🔗?\s*แหล่งข้อมูล:?\s*$/, '').replace(/\n{3,}/g, '\n\n').trim();
 
     // Escape &<> for safe HTML preview (sendTelegramWithKeyboard uses parse_mode: HTML)
     const esc = (t) => t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
