@@ -1964,6 +1964,60 @@ async function handleSendCallback(env, callbackQuery) {
   const action = parts[1]; // "g"
   const targetChatId = parts.slice(2).join(":"); // handle negative chat IDs
 
+  if (action === "a") {
+    // Approve: extract message from preview and send to group
+    const fullText = callbackQuery.message.text || "";
+    // Preview format: "📝 ข้อความที่จะส่งไปยัง "GroupName":\n\n{message}"
+    const messageToSend = fullText.replace(/^[^\n]*\n\n/, "");
+    try {
+      await sendTelegram(env, targetChatId, messageToSend, null);
+      await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/editMessageText`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          chat_id: callbackQuery.message.chat.id,
+          message_id: callbackQuery.message.message_id,
+          text: "✅ ส่งแล้วค่ะนาย",
+        }),
+      });
+    } catch (err) {
+      await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/editMessageText`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          chat_id: callbackQuery.message.chat.id,
+          message_id: callbackQuery.message.message_id,
+          text: "❌ ส่งไม่สำเร็จ: " + err.message,
+        }),
+      });
+    }
+    await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/answerCallbackQuery`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ callback_query_id: callbackQuery.id }),
+    });
+    return;
+  }
+
+  if (action === "r") {
+    // Reject: cancel sending
+    await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/editMessageText`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chat_id: callbackQuery.message.chat.id,
+        message_id: callbackQuery.message.message_id,
+        text: "❌ ยกเลิกแล้วค่ะนาย",
+      }),
+    });
+    await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/answerCallbackQuery`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ callback_query_id: callbackQuery.id }),
+    });
+    return;
+  }
+
   if (action === "g") {
     const row = await env.DB.prepare(
       `SELECT chat_title FROM messages WHERE chat_id = ? AND chat_title IS NOT NULL ORDER BY created_at DESC LIMIT 1`
@@ -1971,9 +2025,15 @@ async function handleSendCallback(env, callbackQuery) {
     const groupName = row?.chat_title || `Group ${targetChatId}`;
 
     const chatId = callbackQuery.message.chat.id;
-    await sendTelegram(env, chatId,
-      `📨 พิมพ์ข้อความที่ต้องการส่งไปยัง "${groupName}" (reply ข้อความนี้ค่ะนาย)\n\n[send:${targetChatId}]`,
-      null);
+    await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chat_id: chatId,
+        text: `📨 สั่ง AI ว่าต้องการส่งอะไรไปยัง "${groupName}" (reply ข้อความนี้ค่ะนาย)\n\n[send:${targetChatId}]`,
+        reply_markup: { force_reply: true, selective: true },
+      }),
+    });
 
     await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/answerCallbackQuery`, {
       method: "POST",
@@ -1985,8 +2045,37 @@ async function handleSendCallback(env, callbackQuery) {
 
 async function handleSendReply(env, message, targetChatId, msgText) {
   try {
-    await sendTelegram(env, targetChatId, msgText, null);
-    await sendTelegram(env, message.chat.id, "ส่งแล้วค่ะนาย ✓", message.message_id);
+    await sendTyping(env, message.chat.id);
+
+    // Get group name for display
+    const row = await env.DB.prepare(
+      `SELECT chat_title FROM messages WHERE chat_id = ? AND chat_title IS NOT NULL ORDER BY created_at DESC LIMIT 1`
+    ).bind(targetChatId).first();
+    const groupName = row?.chat_title || `Group ${targetChatId}`;
+
+    // Get smart context from DM
+    const context = await getSmartContext(env.DB, message.chat.id, true, msgText);
+
+    // Ask AI to draft the message
+    const aiPrompt = `บอสต้องการให้เขียนข้อความเพื่อส่งไปยังกลุ่ม (chat_id: ${targetChatId})\nคำสั่ง: ${msgText}\nกรุณาเขียนเฉพาะเนื้อหาข้อความที่จะส่งเท่านั้น ไม่ต้องใส่คำอธิบาย หมายเหตุ หรือ action tags ใดๆ`;
+    const aiResponse = await askGemini(env, aiPrompt, context, null);
+
+    // Strip action tags without executing them
+    const cleanMessage = aiResponse
+      .replace(/\[SEND:[^\]]+\]/g, '')
+      .replace(/\[REMEMBER:\w+:[^\]]+\]/g, '')
+      .replace(/\[FORGET:\d+\]/g, '')
+      .trim();
+
+    // Show preview with approve/reject buttons
+    const previewText = `📝 ข้อความที่จะส่งไปยัง "${groupName}":\n\n${cleanMessage}`;
+    const buttons = [
+      [
+        { text: "✅ อนุมัติส่ง", callback_data: `send:a:${targetChatId}` },
+        { text: "❌ ยกเลิก", callback_data: `send:r:${targetChatId}` },
+      ],
+    ];
+    await sendTelegramWithKeyboard(env, message.chat.id, previewText, message.message_id, buttons);
   } catch (err) {
     await sendTelegram(env, message.chat.id, "ส่งไม่สำเร็จ: " + err.message, message.message_id);
   }
