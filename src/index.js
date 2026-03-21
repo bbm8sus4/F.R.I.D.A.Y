@@ -2055,16 +2055,19 @@ async function handleSendReply(env, message, targetChatId, msgText) {
     const aiPrompt = `บอสต้องการให้เขียนข้อความเพื่อส่งไปยังกลุ่ม (chat_id: ${targetChatId})\nคำสั่ง: ${msgText}\nกรุณาเขียนเฉพาะเนื้อหาข้อความที่จะส่งเท่านั้น ไม่ต้องใส่คำอธิบาย หมายเหตุ หรือ action tags ใดๆ`;
     const aiResponse = await askGemini(env, aiPrompt, context, null);
 
-    // Strip action tags without executing them
-    const cleanMessage = aiResponse
-      .replace(/\[SEND:[^\]]+\]/g, '')
-      .replace(/\[REMEMBER:\w+:[^\]]+\]/g, '')
-      .replace(/\[FORGET:\d+\]/g, '')
-      .trim();
+    // Strip action tags, grounding links, and HTML tags → clean plain text
+    const cleanMessage = stripHtmlTags(
+      aiResponse
+        .replace(/\[SEND:[^\]]+\]/g, '')
+        .replace(/\[REMEMBER:\w+:[^\]]+\]/g, '')
+        .replace(/\[FORGET:\d+\]/g, '')
+        // Strip Gemini grounding citation links (• <a href="vertexaisearch...">domain</a>)
+        .replace(/[•*\-]?\s*<a\s+href="https?:\/\/vertexaisearch\.cloud\.google\.com\/[^"]*">[^<]*<\/a>/g, '')
+    ).replace(/\n{3,}/g, '\n\n').trim();
 
-    // Escape HTML entities for safe preview (sendTelegramWithKeyboard uses parse_mode: HTML)
-    const escHtml = (t) => t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    const previewText = `📝 ข้อความที่จะส่งไปยัง "${escHtml(groupName)}":\n\n${escHtml(cleanMessage)}`;
+    // Escape &<> for safe HTML preview (sendTelegramWithKeyboard uses parse_mode: HTML)
+    const esc = (t) => t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const previewText = `📝 ข้อความที่จะส่งไปยัง "${esc(groupName)}":\n\n${esc(cleanMessage)}`;
     const buttons = [
       [
         { text: "✅ อนุมัติส่ง", callback_data: `send:a:${targetChatId}` },
