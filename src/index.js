@@ -77,6 +77,16 @@ export default {
       const message = update.message || update.edited_message;
       if (!message) return new Response("OK", { status: 200 });
 
+      // Handle group → supergroup migration: อัพเดท chat_id ใน DB
+      if (message.migrate_to_chat_id) {
+        const oldId = message.chat.id;
+        const newId = message.migrate_to_chat_id;
+        ctx.waitUntil(
+          env.DB.prepare(`UPDATE messages SET chat_id = ? WHERE chat_id = ?`).bind(newId, oldId).run()
+        );
+        return new Response("OK", { status: 200 });
+      }
+
       // ข้ามถ้าไม่มี from (channel post)
       if (!message.from) return new Response("OK", { status: 200 });
 
@@ -2010,6 +2020,16 @@ async function executeDeleteMessage(env, callbackQuery, targetChatId, targetMsgI
       toastText = "ข้อความถูกลบไปแล้วก่อนหน้านี้ (ลบจาก DB แล้ว)";
     } else if (desc.includes("message can't be deleted")) {
       toastText = "ไม่สามารถลบได้ — อาจเก่าเกิน 48 ชม. หรือบอทไม่ใช่ admin";
+    } else if (desc.includes("upgraded to a supergroup")) {
+      // กลุ่มถูกอัพเกรด → chat_id เก่าใช้ไม่ได้ → ลบข้อมูลเก่าจาก DB
+      const migrateChatId = delResult.parameters?.migrate_to_chat_id;
+      if (migrateChatId) {
+        await env.DB.prepare(`UPDATE messages SET chat_id = ? WHERE chat_id = ?`).bind(migrateChatId, targetChatId).run();
+        toastText = "กลุ่มถูกอัพเกรดเป็น supergroup — อัพเดท DB แล้ว กรุณาลองใหม่";
+      } else {
+        await env.DB.prepare(`DELETE FROM messages WHERE chat_id = ?`).bind(targetChatId).run();
+        toastText = "กลุ่มถูกอัพเกรดเป็น supergroup — ลบข้อมูลเก่าจาก DB แล้ว";
+      }
     } else {
       toastText = "ลบไม่สำเร็จ: " + desc;
     }
