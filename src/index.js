@@ -145,6 +145,10 @@ export default {
       // Boss commands
       const parsed = parseCommand(text);
       if (parsed) {
+        // Strip bot mention from args (e.g. "/readhtml @Bot_name" → args = "")
+        if (botUsername) {
+          parsed.args = parsed.args.replace(new RegExp(`@${botUsername}\\b\\s*`, "i"), "").trim();
+        }
         const handlers = {
           "/send": () => handleSendCommand(env, message, parsed.args),
           "/pending": () => handlePendingCommand(env, message),
