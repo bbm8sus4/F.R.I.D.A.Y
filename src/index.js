@@ -81,9 +81,10 @@ export default {
       if (message.migrate_to_chat_id) {
         const oldId = message.chat.id;
         const newId = message.migrate_to_chat_id;
-        ctx.waitUntil(
-          env.DB.prepare(`UPDATE messages SET chat_id = ? WHERE chat_id = ?`).bind(newId, oldId).run()
-        );
+        ctx.waitUntil(Promise.all([
+          env.DB.prepare(`UPDATE messages SET chat_id = ? WHERE chat_id = ?`).bind(newId, oldId).run(),
+          env.DB.prepare(`UPDATE bot_messages SET chat_id = ? WHERE chat_id = ?`).bind(newId, oldId).run(),
+        ]));
         return new Response("OK", { status: 200 });
       }
 
@@ -927,8 +928,25 @@ async function sendVoice(env, chatId, audioBase64, replyToMessageId) {
     method: "POST",
     body: formData,
   });
-  if (!res.ok) console.error("sendVoice error:", await res.text());
+  if (!res.ok) {
+    console.error("sendVoice error:", await res.text());
+  } else {
+    try {
+      const result = await res.clone().json();
+      if (result.ok) await trackBotMessage(env, chatId, result.result.message_id, "[Voice]");
+    } catch (e) { /* ignore */ }
+  }
   return res.ok;
+}
+
+// Track bot's sent messages for /delete feature (groups only)
+async function trackBotMessage(env, chatId, messageId, textPreview) {
+  if (chatId >= 0) return; // DM → ไม่ track
+  try {
+    await env.DB.prepare(
+      `INSERT INTO bot_messages (chat_id, message_id, text_preview) VALUES (?, ?, ?)`
+    ).bind(chatId, messageId, (textPreview || "").substring(0, 100)).run();
+  } catch (e) { /* ignore */ }
 }
 
 async function sendTelegram(env, chatId, text, replyToMessageId, useHtml = false) {
@@ -942,6 +960,16 @@ async function sendTelegram(env, chatId, text, replyToMessageId, useHtml = false
     link_preview_options: { is_disabled: true },
   };
   if (useHtml) baseBody.parse_mode = "HTML";
+
+  // Helper: parse response and track bot message
+  const trackRes = async (res, preview) => {
+    if (res.ok) {
+      try {
+        const result = await res.clone().json();
+        if (result.ok) await trackBotMessage(env, chatId, result.result.message_id, preview);
+      } catch (e) { /* ignore */ }
+    }
+  };
 
   // ข้อความสั้น → ส่งปกติ
   if (sendText.length <= 4096) {
@@ -958,12 +986,15 @@ async function sendTelegram(env, chatId, text, replyToMessageId, useHtml = false
       if (useHtml && res.status === 400) {
         console.log("HTML send failed, retrying as plain text");
         const plainText = stripHtmlTags(text);
-        await fetch(url, {
+        const fallbackRes = await fetch(url, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ chat_id: chatId, text: plainText, reply_to_message_id: replyToMessageId }),
         });
+        await trackRes(fallbackRes, plainText);
       }
+    } else {
+      await trackRes(res, text);
     }
     return;
   }
@@ -988,7 +1019,7 @@ async function sendTelegram(env, chatId, text, replyToMessageId, useHtml = false
       if (useHtml && res.status === 400) {
         console.log(`HTML send failed (chunk ${i + 1}), retrying as plain text`);
         const plainChunk = stripHtmlTags(chunks[i]);
-        await fetch(url, {
+        const fallbackRes = await fetch(url, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -997,7 +1028,10 @@ async function sendTelegram(env, chatId, text, replyToMessageId, useHtml = false
             reply_to_message_id: i === 0 ? replyToMessageId : null,
           }),
         });
+        await trackRes(fallbackRes, plainChunk);
       }
+    } else {
+      await trackRes(res, chunks[i]);
     }
   }
 }
@@ -1015,7 +1049,14 @@ async function sendTelegramWithKeyboard(env, chatId, text, replyToMessageId, but
       reply_markup: { inline_keyboard: buttons },
     }),
   });
-  if (!res.ok) console.error("sendTelegramWithKeyboard error:", await res.text());
+  if (!res.ok) {
+    console.error("sendTelegramWithKeyboard error:", await res.text());
+  } else {
+    try {
+      const result = await res.clone().json();
+      if (result.ok) await trackBotMessage(env, chatId, result.result.message_id, text);
+    } catch (e) { /* ignore */ }
+  }
 }
 
 // ===== Handlers =====
@@ -1854,21 +1895,35 @@ async function handleDeleteCommand(env, message) {
     }
     const { results } = await env.DB
       .prepare(
-        `SELECT chat_id, chat_title, MAX(created_at) as last_msg
-         FROM messages
-         WHERE chat_title IS NOT NULL AND created_at > datetime('now', '-48 hours')
+        `SELECT chat_id, MAX(created_at) as last_msg
+         FROM bot_messages
+         WHERE created_at > datetime('now', '-48 hours')
          GROUP BY chat_id
          ORDER BY last_msg DESC`
       )
       .all();
     if (!results.length) {
-      await sendTelegram(env, message.chat.id, "ไม่พบข้อความในกลุ่มใดเลยในช่วง 48 ชม.ที่ผ่านมาค่ะนาย", message.message_id);
+      await sendTelegram(env, message.chat.id, "ไม่พบข้อความของ Friday ในกลุ่มใดเลยในช่วง 48 ชม.ที่ผ่านมาค่ะนาย", message.message_id);
       return;
     }
+    // ดึงชื่อกลุ่มจาก messages table
+    const chatIds = results.map(r => r.chat_id);
+    const placeholders = chatIds.map(() => "?").join(",");
+    const { results: titles } = await env.DB
+      .prepare(
+        `SELECT chat_id, chat_title FROM messages
+         WHERE chat_id IN (${placeholders}) AND chat_title IS NOT NULL
+         GROUP BY chat_id`
+      )
+      .bind(...chatIds)
+      .all();
+    const titleMap = {};
+    for (const t of titles) titleMap[t.chat_id] = t.chat_title;
+
     const buttons = results.map((r) => [
-      { text: r.chat_title, callback_data: `del:g:${r.chat_id}` },
+      { text: titleMap[r.chat_id] || `Group ${r.chat_id}`, callback_data: `del:g:${r.chat_id}` },
     ]);
-    await sendTelegramWithKeyboard(env, message.chat.id, "🗑 เลือกกลุ่มที่ต้องการลบข้อความค่ะนาย:", message.message_id, buttons);
+    await sendTelegramWithKeyboard(env, message.chat.id, "🗑 เลือกกลุ่มที่ต้องการลบข้อความของ Friday:", message.message_id, buttons);
   } catch (err) {
     console.error("handleDeleteCommand error:", err);
     await sendTelegram(env, message.chat.id, "เกิดข้อผิดพลาดค่ะนาย: " + err.message, message.message_id);
@@ -1910,8 +1965,8 @@ async function showGroupMessages(env, callbackQuery, targetChatId, offset) {
   const limit = 10;
   const { results } = await env.DB
     .prepare(
-      `SELECT message_id, username, first_name, message_text, datetime(created_at, '+7 hours') as created_at
-       FROM messages
+      `SELECT message_id, text_preview, datetime(created_at, '+7 hours') as created_at
+       FROM bot_messages
        WHERE chat_id = ? AND created_at > datetime('now', '-48 hours')
        ORDER BY created_at DESC
        LIMIT ? OFFSET ?`
@@ -1928,16 +1983,15 @@ async function showGroupMessages(env, callbackQuery, targetChatId, offset) {
       body: JSON.stringify({
         chat_id: chatId,
         message_id: messageId,
-        text: "ไม่มีข้อความในกลุ่มนี้ในช่วง 48 ชม.ที่ผ่านมาค่ะนาย",
+        text: "ไม่มีข้อความของ Friday ในกลุ่มนี้ในช่วง 48 ชม.ที่ผ่านมาค่ะนาย",
         reply_markup: { inline_keyboard: buttons },
       }),
     });
     return;
   }
   const buttons = rows.map((r) => {
-    const name = r.username ? `@${r.username}` : r.first_name || "?";
-    const preview = (r.message_text || "").substring(0, 25);
-    const label = `${name}: ${preview}${(r.message_text || "").length > 25 ? "…" : ""}`;
+    const preview = (r.text_preview || "").substring(0, 30);
+    const label = `Friday: ${preview}${(r.text_preview || "").length > 30 ? "…" : ""}`;
     return [{ text: label, callback_data: `del:m:${targetChatId}:${r.message_id}` }];
   });
   const nav = [];
@@ -1952,7 +2006,7 @@ async function showGroupMessages(env, callbackQuery, targetChatId, offset) {
     body: JSON.stringify({
       chat_id: chatId,
       message_id: messageId,
-      text: "🗑 แตะข้อความที่ต้องการลบ:",
+      text: "🗑 แตะข้อความของ Friday ที่ต้องการลบ:",
       reply_markup: { inline_keyboard: buttons },
     }),
   });
@@ -1963,9 +2017,9 @@ async function showGroupList(env, callbackQuery) {
   const messageId = callbackQuery.message.message_id;
   const { results } = await env.DB
     .prepare(
-      `SELECT chat_id, chat_title, MAX(created_at) as last_msg
-       FROM messages
-       WHERE chat_title IS NOT NULL AND created_at > datetime('now', '-48 hours')
+      `SELECT chat_id, MAX(created_at) as last_msg
+       FROM bot_messages
+       WHERE created_at > datetime('now', '-48 hours')
        GROUP BY chat_id
        ORDER BY last_msg DESC`
     )
@@ -1977,14 +2031,28 @@ async function showGroupList(env, callbackQuery) {
       body: JSON.stringify({
         chat_id: chatId,
         message_id: messageId,
-        text: "ไม่พบข้อความในกลุ่มใดเลยในช่วง 48 ชม.ที่ผ่านมาค่ะนาย",
+        text: "ไม่พบข้อความของ Friday ในกลุ่มใดเลยในช่วง 48 ชม.ที่ผ่านมาค่ะนาย",
         reply_markup: { inline_keyboard: [] },
       }),
     });
     return;
   }
+  // ดึงชื่อกลุ่ม
+  const chatIds = results.map(r => r.chat_id);
+  const placeholders = chatIds.map(() => "?").join(",");
+  const { results: titles } = await env.DB
+    .prepare(
+      `SELECT chat_id, chat_title FROM messages
+       WHERE chat_id IN (${placeholders}) AND chat_title IS NOT NULL
+       GROUP BY chat_id`
+    )
+    .bind(...chatIds)
+    .all();
+  const titleMap = {};
+  for (const t of titles) titleMap[t.chat_id] = t.chat_title;
+
   const buttons = results.map((r) => [
-    { text: r.chat_title, callback_data: `del:g:${r.chat_id}` },
+    { text: titleMap[r.chat_id] || `Group ${r.chat_id}`, callback_data: `del:g:${r.chat_id}` },
   ]);
   await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/editMessageText`, {
     method: "POST",
@@ -1992,7 +2060,7 @@ async function showGroupList(env, callbackQuery) {
     body: JSON.stringify({
       chat_id: chatId,
       message_id: messageId,
-      text: "🗑 เลือกกลุ่มที่ต้องการลบข้อความค่ะนาย:",
+      text: "🗑 เลือกกลุ่มที่ต้องการลบข้อความของ Friday:",
       reply_markup: { inline_keyboard: buttons },
     }),
   });
@@ -2006,9 +2074,9 @@ async function executeDeleteMessage(env, callbackQuery, targetChatId, targetMsgI
     body: JSON.stringify({ chat_id: targetChatId, message_id: targetMsgId }),
   });
   const delResult = await delRes.json();
-  // ลบจาก DB
+  // ลบจาก bot_messages DB
   await env.DB
-    .prepare(`DELETE FROM messages WHERE chat_id = ? AND message_id = ?`)
+    .prepare(`DELETE FROM bot_messages WHERE chat_id = ? AND message_id = ?`)
     .bind(targetChatId, targetMsgId)
     .run();
   let toastText;
@@ -2019,15 +2087,15 @@ async function executeDeleteMessage(env, callbackQuery, targetChatId, targetMsgI
     if (desc.includes("message to delete not found")) {
       toastText = "ข้อความถูกลบไปแล้วก่อนหน้านี้ (ลบจาก DB แล้ว)";
     } else if (desc.includes("message can't be deleted")) {
-      toastText = "ไม่สามารถลบได้ — อาจเก่าเกิน 48 ชม. หรือบอทไม่ใช่ admin";
+      toastText = "ไม่สามารถลบได้ — อาจเก่าเกิน 48 ชม.";
     } else if (desc.includes("upgraded to a supergroup")) {
-      // กลุ่มถูกอัพเกรด → chat_id เก่าใช้ไม่ได้ → ลบข้อมูลเก่าจาก DB
       const migrateChatId = delResult.parameters?.migrate_to_chat_id;
       if (migrateChatId) {
+        await env.DB.prepare(`UPDATE bot_messages SET chat_id = ? WHERE chat_id = ?`).bind(migrateChatId, targetChatId).run();
         await env.DB.prepare(`UPDATE messages SET chat_id = ? WHERE chat_id = ?`).bind(migrateChatId, targetChatId).run();
         toastText = "กลุ่มถูกอัพเกรดเป็น supergroup — อัพเดท DB แล้ว กรุณาลองใหม่";
       } else {
-        await env.DB.prepare(`DELETE FROM messages WHERE chat_id = ?`).bind(targetChatId).run();
+        await env.DB.prepare(`DELETE FROM bot_messages WHERE chat_id = ?`).bind(targetChatId).run();
         toastText = "กลุ่มถูกอัพเกรดเป็น supergroup — ลบข้อมูลเก่าจาก DB แล้ว";
       }
     } else {
@@ -2537,6 +2605,11 @@ async function summarizeAndCleanup(env) {
     // ลบ file_cache เก่ากว่า 24 ชม.
     await env.DB.prepare(
       `DELETE FROM file_cache WHERE created_at < datetime('now', '-24 hours')`
+    ).run();
+
+    // ลบ bot_messages เก่ากว่า 48 ชม.
+    await env.DB.prepare(
+      `DELETE FROM bot_messages WHERE created_at < datetime('now', '-48 hours')`
     ).run();
 
     if (totalDeletedMessages > 0 || totalSummaries > 0 || commitResult.meta.changes > 0) {

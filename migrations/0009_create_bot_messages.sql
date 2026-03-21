@@ -1,0 +1,8 @@
+CREATE TABLE IF NOT EXISTS bot_messages (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  chat_id INTEGER NOT NULL,
+  chat_title TEXT,
+  message_id INTEGER NOT NULL,
+  text_preview TEXT,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
