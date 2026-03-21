@@ -1969,28 +1969,23 @@ async function handleSendCallback(env, callbackQuery) {
     const fullText = callbackQuery.message.text || "";
     // Preview format: "📝 ข้อความที่จะส่งไปยัง "GroupName":\n\n{message}"
     const messageToSend = fullText.replace(/^[^\n]*\n\n/, "");
-    try {
-      await sendTelegram(env, targetChatId, messageToSend, null);
-      await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/editMessageText`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          chat_id: callbackQuery.message.chat.id,
-          message_id: callbackQuery.message.message_id,
-          text: "✅ ส่งแล้วค่ะนาย",
-        }),
-      });
-    } catch (err) {
-      await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/editMessageText`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          chat_id: callbackQuery.message.chat.id,
-          message_id: callbackQuery.message.message_id,
-          text: "❌ ส่งไม่สำเร็จ: " + err.message,
-        }),
-      });
-    }
+    // Send directly and check response (sendTelegram doesn't throw on API errors)
+    const sendRes = await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chat_id: targetChatId, text: messageToSend }),
+    });
+    const sendOk = sendRes.ok;
+    if (!sendOk) console.error("send approve error:", await sendRes.text());
+    await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/editMessageText`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chat_id: callbackQuery.message.chat.id,
+        message_id: callbackQuery.message.message_id,
+        text: sendOk ? "✅ ส่งแล้วค่ะนาย" : "❌ ส่งไม่สำเร็จ",
+      }),
+    });
     await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/answerCallbackQuery`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -2067,8 +2062,9 @@ async function handleSendReply(env, message, targetChatId, msgText) {
       .replace(/\[FORGET:\d+\]/g, '')
       .trim();
 
-    // Show preview with approve/reject buttons
-    const previewText = `📝 ข้อความที่จะส่งไปยัง "${groupName}":\n\n${cleanMessage}`;
+    // Escape HTML entities for safe preview (sendTelegramWithKeyboard uses parse_mode: HTML)
+    const escHtml = (t) => t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const previewText = `📝 ข้อความที่จะส่งไปยัง "${escHtml(groupName)}":\n\n${escHtml(cleanMessage)}`;
     const buttons = [
       [
         { text: "✅ อนุมัติส่ง", callback_data: `send:a:${targetChatId}` },
