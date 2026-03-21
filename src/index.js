@@ -72,6 +72,10 @@ export default {
           ctx.waitUntil(handleDeleteCallback(env, callbackQuery));
           return new Response("OK", { status: 200 });
         }
+        if (callbackQuery.data?.startsWith("send:")) {
+          ctx.waitUntil(handleSendCallback(env, callbackQuery));
+          return new Response("OK", { status: 200 });
+        }
       }
 
       const message = update.message || update.edited_message;
@@ -91,7 +95,7 @@ export default {
       // ข้ามถ้าไม่มี from (channel post)
       if (!message.from) return new Response("OK", { status: 200 });
 
-      const text = message.text || message.caption || "";
+      let text = message.text || message.caption || "";
       const hasPdf = message.document?.mime_type === "application/pdf";
       const hasHtml = message.document?.mime_type === "text/html";
       const hasPhoto = !!(message.photo?.length > 0 || message.document?.mime_type?.startsWith("image/"));
@@ -142,6 +146,17 @@ export default {
         return new Response("OK", { status: 200 });
       }
 
+      // Reply keyboard shortcuts (DM only)
+      if (isDM) {
+        const shortcutMap = {
+          "📋 Pending": "/pending",
+          "🧠 Memories": "/memories",
+          "🗑 Delete": "/delete",
+          "📨 Send": "/send",
+        };
+        if (shortcutMap[text]) text = shortcutMap[text];
+      }
+
       // Boss commands
       const parsed = parseCommand(text);
       if (parsed) {
@@ -164,6 +179,8 @@ export default {
           "/readpdf": () => handleReadpdfCommand(env, message, parsed.args),
           "/readimg": () => handleReadimgCommand(env, message, parsed.args),
           "/delete": () => handleDeleteCommand(env, message),
+          "/menu": () => sendReplyKeyboard(env, message.chat.id),
+          "/start": () => sendReplyKeyboard(env, message.chat.id),
         };
 
         const handler = handlers[parsed.cmd];
@@ -196,6 +213,13 @@ export default {
         const fcMatch = message.reply_to_message.text.match(/\[fc:(\d+)\]/);
         if (fcMatch) {
           ctx.waitUntil(handleFileAsk(env, message, Number(fcMatch[1]), text));
+          return new Response("OK", { status: 200 });
+        }
+
+        // Handle send reply
+        const sendMatch = message.reply_to_message.text.match(/\[send:(-?\d+)\]/);
+        if (sendMatch) {
+          ctx.waitUntil(handleSendReply(env, message, sendMatch[1], text));
           return new Response("OK", { status: 200 });
         }
       }
@@ -1063,6 +1087,25 @@ async function sendTelegramWithKeyboard(env, chatId, text, replyToMessageId, but
   }
 }
 
+async function sendReplyKeyboard(env, chatId) {
+  await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      chat_id: chatId,
+      text: "เลือกคำสั่งได้เลยค่ะนาย:",
+      reply_markup: {
+        keyboard: [
+          [{ text: "📋 Pending" }, { text: "🧠 Memories" }],
+          [{ text: "📨 Send" }, { text: "🗑 Delete" }],
+        ],
+        resize_keyboard: true,
+        is_persistent: true,
+      },
+    }),
+  });
+}
+
 // ===== Handlers =====
 
 async function parseAndExecuteActions(env, reply) {
@@ -1874,8 +1917,35 @@ async function handleReadlinkAsk(env, message, cacheId, question) {
 
 async function handleSendCommand(env, message, args) {
   try {
+    // Interactive mode: no args → show group list
+    if (!args.trim()) {
+      const { results } = await env.DB.prepare(`
+        SELECT chat_id, chat_title, MAX(created_at) as last_msg
+        FROM messages
+        WHERE chat_id != ? AND chat_title IS NOT NULL
+        GROUP BY chat_id
+        ORDER BY last_msg DESC
+        LIMIT 10
+      `).bind(message.chat.id).all();
+
+      if (!results.length) {
+        await sendTelegram(env, message.chat.id, "ไม่พบกลุ่มที่เคยมีข้อความค่ะ", message.message_id);
+        return;
+      }
+
+      const buttons = results.map(r => [{
+        text: r.chat_title || `Group ${r.chat_id}`,
+        callback_data: `send:g:${r.chat_id}`
+      }]);
+
+      await sendTelegramWithKeyboard(env, message.chat.id,
+        "📨 เลือกกลุ่มที่ต้องการส่งข้อความค่ะนาย:", message.message_id, buttons);
+      return;
+    }
+
+    // Direct mode: /send <chat_id> <message> (backward compat)
     const parts = args.trim().split(/\s+/);
-    if (parts.length < 2 || !parts[0]) {
+    if (parts.length < 2) {
       await sendTelegram(env, message.chat.id, "Usage: /send <chat_id> <message>", message.message_id);
       return;
     }
@@ -1885,6 +1955,39 @@ async function handleSendCommand(env, message, args) {
     await sendTelegram(env, message.chat.id, "Sent ✓", message.message_id);
   } catch (err) {
     console.error("handleSendCommand error:", err);
+    await sendTelegram(env, message.chat.id, "ส่งไม่สำเร็จ: " + err.message, message.message_id);
+  }
+}
+
+async function handleSendCallback(env, callbackQuery) {
+  const parts = callbackQuery.data.split(":");
+  const action = parts[1]; // "g"
+  const targetChatId = parts.slice(2).join(":"); // handle negative chat IDs
+
+  if (action === "g") {
+    const row = await env.DB.prepare(
+      `SELECT chat_title FROM messages WHERE chat_id = ? AND chat_title IS NOT NULL ORDER BY created_at DESC LIMIT 1`
+    ).bind(targetChatId).first();
+    const groupName = row?.chat_title || `Group ${targetChatId}`;
+
+    const chatId = callbackQuery.message.chat.id;
+    await sendTelegram(env, chatId,
+      `📨 พิมพ์ข้อความที่ต้องการส่งไปยัง "${groupName}" (reply ข้อความนี้ค่ะนาย)\n\n[send:${targetChatId}]`,
+      null);
+
+    await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/answerCallbackQuery`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ callback_query_id: callbackQuery.id }),
+    });
+  }
+}
+
+async function handleSendReply(env, message, targetChatId, msgText) {
+  try {
+    await sendTelegram(env, targetChatId, msgText, null);
+    await sendTelegram(env, message.chat.id, "ส่งแล้วค่ะนาย ✓", message.message_id);
+  } catch (err) {
     await sendTelegram(env, message.chat.id, "ส่งไม่สำเร็จ: " + err.message, message.message_id);
   }
 }
