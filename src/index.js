@@ -64,6 +64,10 @@ export default {
           ctx.waitUntil(handleReadlinkCallback(env, callbackQuery));
           return new Response("OK", { status: 200 });
         }
+        if (callbackQuery.data?.startsWith("fc:")) {
+          ctx.waitUntil(handleFileCallback(env, callbackQuery));
+          return new Response("OK", { status: 200 });
+        }
         if (callbackQuery.data?.startsWith("del:")) {
           ctx.waitUntil(handleDeleteCallback(env, callbackQuery));
           return new Response("OK", { status: 200 });
@@ -142,6 +146,8 @@ export default {
           "/readvoice": () => handleReadvoiceCommand(env, message, parsed.args),
           "/readlink": () => handleReadlinkCommand(env, message, parsed.args),
           "/readhtml": () => handleReadhtmlCommand(env, message, parsed.args),
+          "/readpdf": () => handleReadpdfCommand(env, message, parsed.args),
+          "/readimg": () => handleReadimgCommand(env, message, parsed.args),
           "/delete": () => handleDeleteCommand(env, message),
         };
 
@@ -152,12 +158,29 @@ export default {
         }
       }
 
+      // Auto-detect HTML/PDF files from boss (no command needed)
+      if (isBoss && !parsed && (hasPdf || hasHtml)) {
+        if (hasHtml) {
+          ctx.waitUntil(handleReadhtmlCommand(env, message, ""));
+        } else if (hasPdf) {
+          ctx.waitUntil(handleReadpdfCommand(env, message, ""));
+        }
+        return new Response("OK", { status: 200 });
+      }
+
       // Handle readlink "ถามเอง" reply
       const isReplyToBot = message.reply_to_message?.from?.username === botUsername;
       if (isBoss && isReplyToBot && message.reply_to_message?.text) {
         const rlMatch = message.reply_to_message.text.match(/\[rl:(\d+)\]/);
         if (rlMatch) {
           ctx.waitUntil(handleReadlinkAsk(env, message, Number(rlMatch[1]), text));
+          return new Response("OK", { status: 200 });
+        }
+
+        // Handle file cache "ถามเอง" reply
+        const fcMatch = message.reply_to_message.text.match(/\[fc:(\d+)\]/);
+        if (fcMatch) {
+          ctx.waitUntil(handleFileAsk(env, message, Number(fcMatch[1]), text));
           return new Response("OK", { status: 200 });
         }
       }
@@ -1154,17 +1177,6 @@ async function handleReadhtmlCommand(env, message, args) {
   try {
     const htmlMime = "text/html";
 
-    // Debug: log document info
-    console.log("readhtml DEBUG:", JSON.stringify({
-      hasDoc: !!message.document,
-      docMime: message.document?.mime_type,
-      docName: message.document?.file_name,
-      hasReply: !!message.reply_to_message,
-      replyDoc: !!message.reply_to_message?.document,
-      replyMime: message.reply_to_message?.document?.mime_type,
-      replyName: message.reply_to_message?.document?.file_name,
-    }));
-
     // ตรวจจาก mime_type หรือนามสกุลไฟล์ .html/.htm
     const isHtmlDoc = (doc) => {
       if (!doc) return false;
@@ -1194,25 +1206,358 @@ async function handleReadhtmlCommand(env, message, args) {
       return;
     }
 
-    const truncated = htmlContent.text.substring(0, 8000);
-    const userMessage = args
-      ? `[ไฟล์ HTML: ${htmlContent.fileName}]\n${truncated}\n\n${args}`
-      : `[ไฟล์ HTML: ${htmlContent.fileName}]\n${truncated}\n\nสรุปเนื้อหาในไฟล์นี้ให้หน่อย`;
-
-    const isDM = message.chat.type === "private";
-    let context = "";
-    try {
-      context = await getSmartContext(env.DB, message.chat.id, isDM, args || "สรุป HTML");
-    } catch (e) { /* ignore */ }
-
-    let reply = await askGemini(env, userMessage, context, null);
-    const { cleanReply } = await parseAndExecuteActions(env, reply);
-    if (cleanReply) {
-      await sendTelegram(env, message.chat.id, cleanReply, message.message_id, true);
+    // If args provided, process directly (like old behavior)
+    if (args) {
+      const truncated = htmlContent.text.substring(0, 8000);
+      const userMessage = `[ไฟล์ HTML: ${htmlContent.fileName}]\n${truncated}\n\n${args}`;
+      const isDM = message.chat.type === "private";
+      let context = "";
+      try { context = await getSmartContext(env.DB, message.chat.id, isDM, args); } catch (e) { /* ignore */ }
+      let reply = await askGemini(env, userMessage, context, null);
+      const { cleanReply } = await parseAndExecuteActions(env, reply);
+      if (cleanReply) {
+        await sendTelegram(env, message.chat.id, cleanReply, message.message_id, true);
+      }
+      return;
     }
+
+    // Cache content + show keyboard
+    const { meta } = await env.DB.prepare(
+      `INSERT INTO file_cache (chat_id, file_type, file_name, body_text) VALUES (?, ?, ?, ?)`
+    ).bind(message.chat.id, "html", htmlContent.fileName || "file.html", htmlContent.text.substring(0, 15000)).run();
+    const cacheId = meta.last_row_id;
+
+    const previewText = htmlContent.text.substring(0, 200).replace(/\n+/g, " ");
+    let preview = "📄 <b>HTML File</b>\n";
+    preview += `📁 <b>${htmlContent.fileName}</b>\n`;
+    preview += `📝 ${previewText}...\n\nเลือกสิ่งที่ต้องการค่ะนาย:`;
+
+    await sendTelegramWithKeyboard(env, message.chat.id, preview, message.message_id, [
+      [
+        { text: "📋 สรุปแบบสั้น", callback_data: `fc:short:${cacheId}` },
+        { text: "📝 สรุปละเอียด", callback_data: `fc:detail:${cacheId}` },
+      ],
+      [
+        { text: "🔍 วิเคราะห์", callback_data: `fc:analyze:${cacheId}` },
+        { text: "💬 ถามเอง", callback_data: `fc:ask:${cacheId}` },
+      ],
+    ]);
   } catch (err) {
     console.error("handleReadhtmlCommand error:", err.message, err.stack);
     await sendTelegram(env, message.chat.id, "เกิดข้อผิดพลาดในการอ่านไฟล์ HTML ค่ะนาย", message.message_id);
+  }
+}
+
+// ===== /readpdf — PDF Read with Inline Keyboard =====
+
+async function handleReadpdfCommand(env, message, args) {
+  try {
+    const doc = (message.document?.mime_type === "application/pdf")
+      ? message.document
+      : (message.reply_to_message?.document?.mime_type === "application/pdf")
+        ? message.reply_to_message.document
+        : null;
+
+    if (!doc) {
+      await sendTelegram(env, message.chat.id,
+        "วิธีใช้:\n• ส่งไฟล์ PDF แล้วพิมพ์ /readpdf ใน caption\n• หรือ reply ไฟล์ PDF แล้วพิมพ์ /readpdf",
+        message.message_id);
+      return;
+    }
+
+    // Check file size
+    if (doc.file_size && doc.file_size > MAX_PDF_SIZE) {
+      await sendTelegram(env, message.chat.id,
+        `❌ ไฟล์ PDF ใหญ่เกินไป (${(doc.file_size / 1024 / 1024).toFixed(1)}MB) รองรับสูงสุด 10MB ค่ะนาย`,
+        message.message_id);
+      return;
+    }
+
+    await sendTyping(env, message.chat.id);
+
+    // If args provided, process directly
+    if (args) {
+      const imageData = await downloadPhotoByFileId(env, doc.file_id);
+      if (!imageData || imageData.error) {
+        const errMsg = imageData?.error === "FILE_TOO_LARGE"
+          ? `❌ ไฟล์ PDF ใหญ่เกินไป รองรับสูงสุด 10MB ค่ะนาย`
+          : "❌ ไม่สามารถดาวน์โหลดไฟล์ PDF ได้ค่ะนาย";
+        await sendTelegram(env, message.chat.id, errMsg, message.message_id);
+        return;
+      }
+      const userMessage = `[ไฟล์ PDF: ${doc.file_name || "file.pdf"}]\n\n${args}`;
+      const isDM = message.chat.type === "private";
+      let context = "";
+      try { context = await getSmartContext(env.DB, message.chat.id, isDM, args); } catch (e) { /* ignore */ }
+      let reply = await askGemini(env, userMessage, context, imageData);
+      const { cleanReply } = await parseAndExecuteActions(env, reply);
+      if (cleanReply) {
+        await sendTelegram(env, message.chat.id, cleanReply, message.message_id, true);
+      }
+      return;
+    }
+
+    // Cache file_id + show keyboard
+    const { meta } = await env.DB.prepare(
+      `INSERT INTO file_cache (chat_id, file_type, file_name, file_id) VALUES (?, ?, ?, ?)`
+    ).bind(message.chat.id, "pdf", doc.file_name || "file.pdf", doc.file_id).run();
+    const cacheId = meta.last_row_id;
+
+    let preview = "📄 <b>PDF File</b>\n";
+    preview += `📁 <b>${doc.file_name || "file.pdf"}</b>\n`;
+    if (doc.file_size) preview += `📦 ${(doc.file_size / 1024).toFixed(0)} KB\n`;
+    preview += `\nเลือกสิ่งที่ต้องการค่ะนาย:`;
+
+    await sendTelegramWithKeyboard(env, message.chat.id, preview, message.message_id, [
+      [
+        { text: "📋 สรุปแบบสั้น", callback_data: `fc:short:${cacheId}` },
+        { text: "📝 สรุปละเอียด", callback_data: `fc:detail:${cacheId}` },
+      ],
+      [
+        { text: "🔍 วิเคราะห์", callback_data: `fc:analyze:${cacheId}` },
+        { text: "💬 ถามเอง", callback_data: `fc:ask:${cacheId}` },
+      ],
+    ]);
+  } catch (err) {
+    console.error("handleReadpdfCommand error:", err.message, err.stack);
+    await sendTelegram(env, message.chat.id, "เกิดข้อผิดพลาดในการอ่านไฟล์ PDF ค่ะนาย", message.message_id);
+  }
+}
+
+// ===== /readimg — Image Read with Inline Keyboard =====
+
+async function handleReadimgCommand(env, message, args) {
+  try {
+    const hasPhoto = !!(message.photo?.length > 0 || message.document?.mime_type?.startsWith("image/"));
+    const replyHasPhoto = !!(message.reply_to_message?.photo?.length > 0 || message.reply_to_message?.document?.mime_type?.startsWith("image/"));
+
+    const sourceMsg = hasPhoto ? message : replyHasPhoto ? message.reply_to_message : null;
+
+    if (!sourceMsg) {
+      await sendTelegram(env, message.chat.id,
+        "วิธีใช้:\n• ส่งรูปแล้วพิมพ์ /readimg ใน caption\n• หรือ reply รูปแล้วพิมพ์ /readimg",
+        message.message_id);
+      return;
+    }
+
+    await sendTyping(env, message.chat.id);
+
+    const fileId = getPhotoFileId(sourceMsg);
+    if (!fileId) {
+      await sendTelegram(env, message.chat.id, "❌ ไม่สามารถอ่านรูปภาพได้ค่ะนาย", message.message_id);
+      return;
+    }
+
+    // If args provided, process directly
+    if (args) {
+      const imageData = await downloadPhotoByFileId(env, fileId);
+      if (!imageData || imageData.error) {
+        await sendTelegram(env, message.chat.id, "❌ ไม่สามารถดาวน์โหลดรูปภาพได้ค่ะนาย", message.message_id);
+        return;
+      }
+      const userMessage = `[รูปภาพ]\n\n${args}`;
+      const isDM = message.chat.type === "private";
+      let context = "";
+      try { context = await getSmartContext(env.DB, message.chat.id, isDM, args); } catch (e) { /* ignore */ }
+      let reply = await askGemini(env, userMessage, context, imageData);
+      const { cleanReply } = await parseAndExecuteActions(env, reply);
+      if (cleanReply) {
+        await sendTelegram(env, message.chat.id, cleanReply, message.message_id, true);
+      }
+      return;
+    }
+
+    // Get file name
+    const fileName = sourceMsg.document?.file_name || "image.jpg";
+
+    // Cache file_id + show keyboard
+    const { meta } = await env.DB.prepare(
+      `INSERT INTO file_cache (chat_id, file_type, file_name, file_id) VALUES (?, ?, ?, ?)`
+    ).bind(message.chat.id, "image", fileName, fileId).run();
+    const cacheId = meta.last_row_id;
+
+    let preview = "🖼 <b>Image File</b>\n";
+    preview += `📁 <b>${fileName}</b>\n`;
+    preview += `\nเลือกสิ่งที่ต้องการค่ะนาย:`;
+
+    await sendTelegramWithKeyboard(env, message.chat.id, preview, message.message_id, [
+      [
+        { text: "📋 สรุปแบบสั้น", callback_data: `fc:short:${cacheId}` },
+        { text: "📝 สรุปละเอียด", callback_data: `fc:detail:${cacheId}` },
+      ],
+      [
+        { text: "🔍 วิเคราะห์", callback_data: `fc:analyze:${cacheId}` },
+        { text: "💬 ถามเอง", callback_data: `fc:ask:${cacheId}` },
+      ],
+    ]);
+  } catch (err) {
+    console.error("handleReadimgCommand error:", err.message, err.stack);
+    await sendTelegram(env, message.chat.id, "เกิดข้อผิดพลาดในการอ่านรูปภาพค่ะนาย", message.message_id);
+  }
+}
+
+// ===== File Callback Handler (fc:*) =====
+
+async function handleFileCallback(env, callbackQuery) {
+  const chatId = callbackQuery.message.chat.id;
+  const messageId = callbackQuery.message.message_id;
+
+  // Parse callback data: "fc:<mode>:<cacheId>"
+  const parts = callbackQuery.data.split(":");
+  const mode = parts[1];
+  const cacheId = Number(parts[2]);
+
+  const modeLabels = { short: "สรุปแบบสั้น", detail: "สรุปละเอียด", analyze: "วิเคราะห์", ask: "ถามเอง" };
+
+  // Answer callback query
+  await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/answerCallbackQuery`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      callback_query_id: callbackQuery.id,
+      text: `⏳ กำลัง${modeLabels[mode]}...`,
+    }),
+  });
+
+  // Escape originalText for HTML
+  const originalText = (callbackQuery.message.text || "")
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+  // Helper: editMessageText
+  const editPreview = async (html) => {
+    const res = await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/editMessageText`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chat_id: chatId,
+        message_id: messageId,
+        text: sanitizeHtml(html),
+        parse_mode: "HTML",
+        link_preview_options: { is_disabled: true },
+        reply_markup: { inline_keyboard: [] },
+      }),
+    });
+    if (!res.ok) {
+      const err = await res.text();
+      console.error("editPreview failed:", err);
+    }
+    return res.ok;
+  };
+
+  // Update preview status + remove buttons
+  const statusText = mode === "ask"
+    ? `${originalText}\n\n💬 <b>โหมดถามเอง</b> — reply ข้อความถัดไปเพื่อถามค่ะ`
+    : `${originalText}\n\n⏳ <b>กำลัง${modeLabels[mode]}...</b>`;
+  const editOk = await editPreview(statusText);
+  if (!editOk) return;
+
+  // Load cache
+  const { results } = await env.DB.prepare(
+    `SELECT file_type, file_name, body_text, file_id FROM file_cache WHERE id = ?`
+  ).bind(cacheId).all();
+
+  if (!results.length) {
+    await editPreview(`${originalText}\n\n❌ <b>ไม่พบข้อมูลไฟล์ อาจหมดอายุแล้ว</b>`);
+    await sendTelegram(env, chatId, "❌ ไม่พบข้อมูลไฟล์ อาจหมดอายุแล้ว กรุณาส่งไฟล์ใหม่ค่ะนาย", messageId);
+    return;
+  }
+
+  const cache = results[0];
+
+  // Mode: ถามเอง → send message for reply
+  if (mode === "ask") {
+    await sendTelegram(env, chatId,
+      `💬 พิมพ์คำถามเกี่ยวกับไฟล์นี้ได้เลยค่ะนาย (reply ข้อความนี้)\n\n[fc:${cacheId}]`,
+      messageId);
+    return;
+  }
+
+  const noIntro = "[คำสั่งสำคัญ: ห้ามขึ้นต้นด้วย 'รับทราบ' 'สรุปให้ดังนี้' หรือเกริ่นนำใดๆ — เริ่มเนื้อหาทันที]";
+  const fileLabel = `ไฟล์ ${cache.file_type.toUpperCase()}: ${cache.file_name || "unknown"}`;
+
+  let prompt;
+  let imageData = null;
+
+  if (cache.file_type === "html") {
+    const bodyText = cache.body_text || "";
+    const prompts = {
+      short: `${noIntro}\nสรุปเนื้อหาจากไฟล์นี้แบบกระชับ สั้นที่สุด 2-3 ประโยค:\n\n[${fileLabel}]\n\n--- เนื้อหา ---\n${bodyText}`,
+      detail: `${noIntro}\nสรุปเนื้อหาจากไฟล์นี้อย่างละเอียดครบทุกประเด็นสำคัญ:\n\n[${fileLabel}]\n\n--- เนื้อหา ---\n${bodyText}`,
+      analyze: `${noIntro}\nวิเคราะห์เนื้อหาจากไฟล์นี้เชิงลึก ระบุจุดแข็ง จุดอ่อน ข้อสังเกต และข้อควรระวัง:\n\n[${fileLabel}]\n\n--- เนื้อหา ---\n${bodyText}`,
+    };
+    prompt = prompts[mode];
+  } else {
+    // PDF / Image: re-download
+    imageData = await downloadPhotoByFileId(env, cache.file_id);
+    if (!imageData || imageData.error) {
+      const typeLabel = cache.file_type === "image" ? "รูปภาพ" : "ไฟล์ PDF";
+      await editPreview(`${originalText}\n\n❌ <b>ไม่สามารถดาวน์โหลด${typeLabel}ได้</b>`);
+      await sendTelegram(env, chatId, `❌ ไม่สามารถดาวน์โหลด${typeLabel}ได้ค่ะนาย กรุณาส่งไฟล์ใหม่`, messageId);
+      return;
+    }
+    const typeDesc = cache.file_type === "image" ? "รูปภาพ" : "ไฟล์ PDF";
+    const prompts = {
+      short: `${noIntro}\nสรุปเนื้อหาจาก${typeDesc}นี้แบบกระชับ สั้นที่สุด 2-3 ประโยค:\n\n[${fileLabel}]`,
+      detail: `${noIntro}\nสรุปเนื้อหาจาก${typeDesc}นี้อย่างละเอียดครบทุกประเด็นสำคัญ:\n\n[${fileLabel}]`,
+      analyze: `${noIntro}\nวิเคราะห์เนื้อหาจาก${typeDesc}นี้เชิงลึก ระบุจุดแข็ง จุดอ่อน ข้อสังเกต และข้อควรระวัง:\n\n[${fileLabel}]`,
+    };
+    prompt = prompts[mode];
+  }
+
+  try {
+    await sendTyping(env, chatId);
+    const context = await getSmartContext(env.DB, chatId, callbackQuery.message.chat.type === "private", "");
+    const reply = await askGemini(env, prompt, context, imageData);
+    const { cleanReply } = await parseAndExecuteActions(env, reply);
+    if (cleanReply) {
+      await sendTelegram(env, chatId, cleanReply, null, true);
+    }
+    await editPreview(`${originalText}\n\n✅ <b>${modeLabels[mode]}แล้ว</b>`);
+  } catch (err) {
+    console.error("handleFileCallback Gemini error:", err.message, err.stack);
+    await editPreview(`${originalText}\n\n❌ <b>เกิดข้อผิดพลาด</b> — ลองส่งไฟล์ใหม่ค่ะ`);
+    await sendTelegram(env, chatId, "❌ เกิดข้อผิดพลาดในการประมวลผลค่ะนาย กรุณาลองใหม่", messageId);
+  }
+}
+
+// ===== File Ask Handler (reply ถามเอง) =====
+
+async function handleFileAsk(env, message, cacheId, question) {
+  const { results } = await env.DB.prepare(
+    `SELECT file_type, file_name, body_text, file_id FROM file_cache WHERE id = ?`
+  ).bind(cacheId).all();
+
+  if (!results.length) {
+    await sendTelegram(env, message.chat.id, "❌ ไม่พบข้อมูลไฟล์ อาจหมดอายุแล้ว กรุณาส่งไฟล์ใหม่ค่ะนาย", message.message_id);
+    return;
+  }
+
+  const cache = results[0];
+  await sendTyping(env, message.chat.id);
+
+  const fileLabel = `ไฟล์ ${cache.file_type.toUpperCase()}: ${cache.file_name || "unknown"}`;
+  let prompt;
+  let imageData = null;
+
+  if (cache.file_type === "html") {
+    prompt = `ตอบคำถามเกี่ยวกับเนื้อหาไฟล์นี้:\n\n[${fileLabel}]\n\nคำถาม: ${question}\n\n--- เนื้อหา ---\n${cache.body_text || ""}`;
+  } else {
+    // PDF / Image: re-download
+    imageData = await downloadPhotoByFileId(env, cache.file_id);
+    if (!imageData || imageData.error) {
+      const typeLabel = cache.file_type === "image" ? "รูปภาพ" : "ไฟล์ PDF";
+      await sendTelegram(env, message.chat.id, `❌ ไม่สามารถดาวน์โหลด${typeLabel}ได้ค่ะนาย กรุณาส่งไฟล์ใหม่`, message.message_id);
+      return;
+    }
+    const typeDesc = cache.file_type === "image" ? "รูปภาพ" : "ไฟล์ PDF";
+    prompt = `ตอบคำถามเกี่ยวกับ${typeDesc}นี้:\n\n[${fileLabel}]\n\nคำถาม: ${question}`;
+  }
+
+  const context = await getSmartContext(env.DB, message.chat.id, message.chat.type === "private", "");
+  const reply = await askGemini(env, prompt, context, imageData);
+  const { cleanReply } = await parseAndExecuteActions(env, reply);
+  if (cleanReply) {
+    await sendTelegram(env, message.chat.id, cleanReply, message.message_id, true);
   }
 }
 
@@ -2167,6 +2512,11 @@ async function summarizeAndCleanup(env) {
     // ลบ readlink cache เก่ากว่า 24 ชม.
     await env.DB.prepare(
       `DELETE FROM readlink_cache WHERE created_at < datetime('now', '-24 hours')`
+    ).run();
+
+    // ลบ file_cache เก่ากว่า 24 ชม.
+    await env.DB.prepare(
+      `DELETE FROM file_cache WHERE created_at < datetime('now', '-24 hours')`
     ).run();
 
     if (totalDeletedMessages > 0 || totalSummaries > 0 || commitResult.meta.changes > 0) {
