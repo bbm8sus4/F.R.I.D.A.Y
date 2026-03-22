@@ -3,13 +3,24 @@
 
 // ===== คำที่บ่งบอกคำสัญญา/งานค้าง =====
 const PROMISE_PATTERNS = [
-  /รับปาก/,
-  /สัญญา(ว่า)?/,
+  /รับปาก(?!กา)/,
+  /สัญญา(?!ณ|เช่า|ซื้อขาย|จ้าง|บริการ)/,
   /ไม่เกิน(วัน|พรุ่ง|ศุกร์|จันทร์|อังคาร|พุธ|พฤหัส|เสาร์|อาทิตย์)/,
   /อีก\s?\d+\s?(วัน|ชม|ชั่วโมง|นาที)/,
   /deadline/i,
   /I('ll| will) get (it|this|that) done/i,
 ];
+
+// ===== Urgent keyword patterns (real-time alert, no AI) =====
+const URGENT_PATTERNS = [
+  { pattern: /ด่วน(มาก)?|urgent|emergency|asap/i, type: "urgent" },
+  { pattern: /ระบบ.*(ล่ม|พัง|crash|down)/i, type: "system" },
+  { pattern: /เสียหาย|data\s*loss/i, type: "data" },
+  { pattern: /ลูกค้า.*(โกรธ|ร้องเรียน|complain)/i, type: "customer" },
+];
+
+// Throttle map: chat_id → last urgent alert timestamp (in-memory, resets on deploy)
+const urgentThrottleMap = new Map();
 
 const MAX_PDF_SIZE = 10 * 1024 * 1024; // 10MB
 
@@ -18,21 +29,21 @@ function detectBossMention(message, bossId, bossUsername) {
   // 1. Telegram entity mentions (text_mention + @username)
   const entities = message.entities || message.caption_entities || [];
   for (const e of entities) {
-    if (e.type === "text_mention" && e.user?.id === bossId) return true;
+    if (e.type === "text_mention" && e.user?.id === bossId) return "tag";
     if (e.type === "mention" && bossUsername) {
       const text = message.text || message.caption || "";
       const mentioned = text.substring(e.offset + 1, e.offset + e.length);
-      if (mentioned.toLowerCase() === bossUsername.toLowerCase()) return true;
+      if (mentioned.toLowerCase() === bossUsername.toLowerCase()) return "tag";
     }
   }
 
   // 2. Reply to boss's message
-  if (message.reply_to_message?.from?.id === bossId) return true;
+  if (message.reply_to_message?.from?.id === bossId) return "reply";
 
   // 3. Keyword mention — ชื่อเล่น/คำเรียกบอส
   const text = (message.text || message.caption || "").toLowerCase();
   const bossNicknames = ["บ๊อบ", "บ๊อบบี้", "จารย์บ๊อบ", "พี่บ๊อบ", "ครับบ๊อบ", "บ๊อบครับ", "พ่อใหญ่บ๊อบ", "bob"];
-  if (bossNicknames.some(nick => text.includes(nick.toLowerCase()))) return true;
+  if (bossNicknames.some(nick => text.includes(nick.toLowerCase()))) return "nickname";
 
   return false;
 }
@@ -102,6 +113,8 @@ export default {
         ctx.waitUntil(Promise.all([
           env.DB.prepare(`UPDATE messages SET chat_id = ? WHERE chat_id = ?`).bind(newId, oldId).run(),
           env.DB.prepare(`UPDATE bot_messages SET chat_id = ? WHERE chat_id = ?`).bind(newId, oldId).run(),
+          env.DB.prepare(`UPDATE alerts SET chat_id = ? WHERE chat_id = ?`).bind(newId, oldId).run().catch(() => {}),
+          env.DB.prepare(`UPDATE group_registry SET chat_id = ? WHERE chat_id = ?`).bind(newId, oldId).run().catch(() => {}),
         ]));
         return new Response("OK", { status: 200 });
       }
@@ -141,22 +154,84 @@ export default {
 
       // จับ pattern คำสัญญา (เฉพาะในกลุ่ม จากคนอื่นที่ไม่ใช่บอส)
       if (!isDM && !isBoss && !message.from.is_bot) {
-        ctx.waitUntil(detectCommitments(env.DB, message, text));
+        ctx.waitUntil(detectCommitments(env, message, text));
       }
 
-      // แจ้งเตือนบอสเมื่อมีคนแท็กในกลุ่ม
-      if (!isDM && !isBoss && detectBossMention(message, bossId, env.BOSS_USERNAME)) {
+      // แจ้งเตือนบอสเมื่อมีคนแท็ก/reply/เอ่ยถึงในกลุ่ม
+      const mentionType = detectBossMention(message, bossId, env.BOSS_USERNAME);
+      if (!isDM && !isBoss && mentionType) {
+        const headers = {
+          tag:      "📢 มีคนแท็กนายค่ะ!",
+          reply:    "💬 มีคน Reply ข้อความนายค่ะ!",
+          nickname: "🗣 มีคนเอ่ยถึงนายค่ะ!",
+        };
+        const header = headers[mentionType] || "📢 มีคนแท็กนายค่ะ!";
         const esc = s => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
         const who = esc(message.from.first_name || message.from.username || "ไม่ทราบชื่อ");
         const group = esc(message.chat.title || "กลุ่มไม่ทราบชื่อ");
-        const alert = `มีคนแท็กนายค่ะ!\n\n👤 ${who}\n💬 กลุ่ม: ${group}\n📝 "${esc(text)}"`;
+        const alert = `${header}\n\n👤 ${who}\n💬 กลุ่ม: ${group}\n📝 "${esc(text)}"`;
+
         const mentionChatId = message.chat.id;
         ctx.waitUntil(sendTelegramWithKeyboard(env, bossId, alert, null, [
           [
-            { text: "📋 วิเคราะห์สั้น", callback_data: `pa:s:${mentionChatId}` },
-            { text: "📝 วิเคราะห์ละเอียด", callback_data: `pa:d:${mentionChatId}` },
+            { text: "📋 วิเคราะห์สั้น", callback_data: `pa:s:${mentionChatId}:0` },
+            { text: "📝 วิเคราะห์ละเอียด", callback_data: `pa:d:${mentionChatId}:0` },
+          ],
+          [
+            { text: "✅ จัดการแล้ว", callback_data: `pa:h:${mentionChatId}:0` },
+            { text: "❌ ไม่สำคัญ", callback_data: `pa:x:${mentionChatId}:0` },
           ],
         ]));
+      }
+
+      // Urgent real-time alert — keyword scan (ไม่ต้องรอ cron)
+      if (!isDM && !isBoss && !message.from.is_bot && text) {
+        const urgentMatch = URGENT_PATTERNS.find(p => p.pattern.test(text));
+        if (urgentMatch) {
+          const now = Date.now();
+          const lastSent = urgentThrottleMap.get(message.chat.id) || 0;
+          if (now - lastSent > 30 * 60 * 1000) { // throttle 30 min per group
+            urgentThrottleMap.set(message.chat.id, now);
+            ctx.waitUntil((async () => {
+              const esc = s => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+              const who = esc(message.from.first_name || message.from.username || "ไม่ทราบชื่อ");
+              const group = esc(message.chat.title || "กลุ่มไม่ทราบชื่อ");
+              const urgentHeaders = {
+                urgent:   "🔴 ด่วน! มีเรื่องเร่งด่วนค่ะ",
+                system:   "🔴 ระบบมีปัญหาค่ะ!",
+                data:     "🔴 ข้อมูลอาจเสียหายค่ะ!",
+                customer: "🔴 ลูกค้ามีปัญหาค่ะ!",
+              };
+              const urgentHeader = urgentHeaders[urgentMatch.type] || "🔴 URGENT Alert";
+              const urgentMsg = `<b>${urgentHeader}</b>\n\n👤 ${who}: ${esc(text.substring(0, 300))}\n\n📁 กลุ่ม: ${group}`;
+              // Store in alerts table
+              const alertHash = `urgent-${message.chat.id}-${message.message_id}`;
+              try {
+                await env.DB.prepare(
+                  `INSERT INTO alerts (alert_hash, chat_id, chat_title, urgency, category, who, summary, topic_fingerprint, status)
+                   VALUES (?, ?, ?, 'critical', 'problem', ?, ?, ?, 'new')`
+                ).bind(
+                  alertHash,
+                  message.chat.id,
+                  message.chat.title || null,
+                  message.from.username || message.from.first_name || null,
+                  text.substring(0, 500),
+                  `urgent ${(message.chat.title || '').substring(0, 30)}`,
+                ).run();
+              } catch (e) { console.error("Urgent alert DB error:", e); }
+              await sendTelegramWithKeyboard(env, bossId, urgentMsg, null, [
+                [
+                  { text: "📋 วิเคราะห์สั้น", callback_data: `pa:s:${message.chat.id}` },
+                  { text: "📝 วิเคราะห์ละเอียด", callback_data: `pa:d:${message.chat.id}` },
+                ],
+                [
+                  { text: "✅ จัดการแล้ว", callback_data: `pa:h:${message.chat.id}:0` },
+                  { text: "❌ ไม่สำคัญ", callback_data: `pa:x:${message.chat.id}:0` },
+                ],
+              ]);
+            })());
+          }
+        }
       }
 
       // บอสเท่านั้นที่สั่งได้ทุกอย่าง คนอื่นแค่ถูกเก็บข้อมูล
@@ -302,6 +377,21 @@ async function storeMessage(db, message, text, hasMedia) {
         photoFileId
       )
       .run();
+
+    // Upsert group_registry for group chats
+    if (message.chat.title) {
+      await db
+        .prepare(
+          `INSERT INTO group_registry (chat_id, chat_title, last_message_at, is_active)
+           VALUES (?, ?, CURRENT_TIMESTAMP, 1)
+           ON CONFLICT(chat_id) DO UPDATE SET
+             chat_title = excluded.chat_title,
+             last_message_at = CURRENT_TIMESTAMP,
+             is_active = 1`
+        )
+        .bind(message.chat.id, message.chat.title)
+        .run();
+    }
   } catch (err) {
     console.error("DB insert error:", err);
   }
@@ -309,27 +399,70 @@ async function storeMessage(db, message, text, hasMedia) {
 
 // ===== Pattern Recognition — จับคำสัญญา =====
 
-async function detectCommitments(db, message, text) {
+async function validateCommitmentWithAI(env, text) {
   try {
+    const model = "gemini-2.5-flash";
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${env.GEMINI_API_KEY}`;
+    const systemPrompt = `Analyze this Thai/English chat message. Is someone making a real personal commitment or promise?
+
+YES = someone promises to DO something, commits to a DEADLINE for their own work, or pledges to deliver something
+NO = mentions a contract document (สัญญาเช่า), signal (สัญญาณ), casual time reference (อีก 5 นาที), other people's deadlines, or general information
+
+Respond with exactly: YES or NO`;
+
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        system_instruction: { parts: [{ text: systemPrompt }] },
+        contents: [{ role: "user", parts: [{ text }] }],
+        generationConfig: { maxOutputTokens: 16 },
+      }),
+    });
+
+    if (!response.ok) return true; // fail-open
+    const data = await response.json();
+    const parts = data.candidates?.[0]?.content?.parts;
+    if (!parts) return true;
+
+    let reply = null;
+    for (let i = parts.length - 1; i >= 0; i--) {
+      if (parts[i].text && !parts[i].thought) { reply = parts[i].text; break; }
+    }
+    if (!reply) return true;
+
+    return reply.trim().toUpperCase().startsWith("YES");
+  } catch (err) {
+    console.error("Commitment AI validation error:", err);
+    return true; // fail-open
+  }
+}
+
+async function detectCommitments(env, message, text) {
+  try {
+    let matched = false;
     for (const pattern of PROMISE_PATTERNS) {
       if (pattern.test(text)) {
-        await db
-          .prepare(
-            `INSERT INTO commitments (chat_id, user_id, username, first_name, promise_text, original_message)
-             VALUES (?, ?, ?, ?, ?, ?)`
-          )
-          .bind(
-            message.chat.id,
-            message.from.id,
-            message.from.username || null,
-            message.from.first_name || null,
-            text.substring(0, 200),
-            text
-          )
-          .run();
+        matched = true;
         break;
       }
     }
+    if (!matched) return;
+
+    const isReal = await validateCommitmentWithAI(env, text);
+    if (!isReal) return;
+
+    await env.DB
+      .prepare(
+        `INSERT INTO commitments (chat_id, user_id, username, first_name, promise_text, original_message)
+         VALUES (?, ?, ?, ?, ?, ?)`
+      )
+      .bind(
+        message.chat.id, message.from.id,
+        message.from.username || null, message.from.first_name || null,
+        text.substring(0, 200), text
+      )
+      .run();
   } catch (err) {
     console.error("Commitment detection error:", err);
   }
@@ -2721,16 +2854,117 @@ async function handleForgetCommand(env, message, args) {
   }
 }
 
+// ===== Parse suggested replies from AI analysis =====
+
+function parseSuggestions(text) {
+  const strategies = [
+    // Strategy 1: Original — quoted text with " or "
+    /([1-4])\.\s+(.+?):\s*["\u201C]([\s\S]+?)["\u201D]/g,
+    // Strategy 2: Bold HTML label — <b>label</b>: text
+    /([1-4])\.\s+<b>(.+?)<\/b>:\s*([\s\S]+?)(?=\n[1-4]\.|$)/g,
+    // Strategy 3: **bold** label — **label**: text
+    /([1-4])\.\s+\*\*(.+?)\*\*:\s*([\s\S]+?)(?=\n[1-4]\.|$)/g,
+    // Strategy 4: Simple colon — N. label: text (no quotes needed)
+    /([1-4])\.\s+([^:\n]+?):\s+"?(.+?)"?\s*(?=\n[1-4]\.|$)/g,
+  ];
+
+  for (const regex of strategies) {
+    const suggestions = [];
+    let match;
+    regex.lastIndex = 0;
+    while ((match = regex.exec(text)) !== null) {
+      suggestions.push({
+        num: match[1],
+        label: match[2].trim().replace(/\s*\(.*?\)\s*$/, ''),
+        text: match[3].trim().replace(/^[""\u201C]+|[""\u201D]+$/g, '')
+      });
+    }
+    if (suggestions.length >= 2) return suggestions;
+  }
+  return null;
+}
+
 // ===== Proactive Alert Callback Handler (pa:*) =====
 
 async function handleProactiveAlertCallback(env, callbackQuery) {
   const chatId = callbackQuery.message.chat.id;
   const messageId = callbackQuery.message.message_id;
 
-  // Parse callback data: "pa:<mode>:<groupChatId>"
+  // Parse callback data: "pa:<mode>:<groupChatId>:<alertId>"
   const parts = callbackQuery.data.split(":");
-  const mode = parts[1]; // s = short, d = detail
+  const mode = parts[1]; // s = short, d = detail, h = handled, x = dismissed
   const groupChatId = Number(parts[2]);
+  const alertId = parts[3] ? Number(parts[3]) : 0;
+
+  // Escape original text for HTML
+  const originalText = (callbackQuery.message.text || "")
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+  // Helper: editMessageText
+  const editPreview = async (html, keepButtons = false) => {
+    const body = {
+      chat_id: chatId,
+      message_id: messageId,
+      text: sanitizeHtml(html),
+      parse_mode: "HTML",
+      link_preview_options: { is_disabled: true },
+    };
+    if (!keepButtons) body.reply_markup = { inline_keyboard: [] };
+    const res = await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/editMessageText`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      console.error("pa editPreview failed:", await res.text());
+    }
+    return res.ok;
+  };
+
+  // Helper: update alert status in DB
+  const updateAlertStatus = async (status, action) => {
+    if (!alertId) return;
+    try {
+      await env.DB.prepare(
+        `UPDATE alerts SET status = ?, boss_action = ? WHERE id = ?`
+      ).bind(status, action, alertId).run();
+
+      // Learning: adjust group priority_weight based on feedback
+      if (status === 'handled' || status === 'analyzing') {
+        await env.DB.prepare(
+          `UPDATE group_registry SET priority_weight = MIN(3.0, priority_weight + 0.1) WHERE chat_id = ?`
+        ).bind(groupChatId).run();
+      } else if (status === 'dismissed') {
+        await env.DB.prepare(
+          `UPDATE group_registry SET priority_weight = MAX(0.2, priority_weight - 0.15) WHERE chat_id = ?`
+        ).bind(groupChatId).run();
+      }
+    } catch (e) { console.error("Alert status update error:", e); }
+  };
+
+  // Handle "จัดการแล้ว" button
+  if (mode === "h") {
+    await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/answerCallbackQuery`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ callback_query_id: callbackQuery.id, text: "✅ จัดการแล้ว" }),
+    });
+    await updateAlertStatus("handled", "handled");
+    await editPreview(`${originalText}\n\n✅ <b>จัดการแล้ว</b>`);
+    return;
+  }
+
+  // Handle "ไม่สำคัญ" button
+  if (mode === "x") {
+    await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/answerCallbackQuery`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ callback_query_id: callbackQuery.id, text: "❌ ปัดทิ้ง" }),
+    });
+    await updateAlertStatus("dismissed", "dismissed");
+    await editPreview(`${originalText}\n\n❌ <b>ไม่สำคัญ — ปัดทิ้งแล้ว</b>`);
+    return;
+  }
 
   const modeLabels = { s: "วิเคราะห์สั้น", d: "วิเคราะห์ละเอียด" };
 
@@ -2744,32 +2978,11 @@ async function handleProactiveAlertCallback(env, callbackQuery) {
     }),
   });
 
-  // Escape original text for HTML
-  const originalText = (callbackQuery.message.text || "")
-    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-
-  // Helper: editMessageText
-  const editPreview = async (html) => {
-    const res = await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/editMessageText`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        chat_id: chatId,
-        message_id: messageId,
-        text: sanitizeHtml(html),
-        parse_mode: "HTML",
-        link_preview_options: { is_disabled: true },
-        reply_markup: { inline_keyboard: [] },
-      }),
-    });
-    if (!res.ok) {
-      console.error("pa editPreview failed:", await res.text());
-    }
-    return res.ok;
-  };
+  // Update alert status to analyzing
+  await updateAlertStatus("analyzing", modeLabels[mode]);
 
   // Update preview: กำลังวิเคราะห์ + ลบปุ่ม
-  const editOk = await editPreview(`${originalText}\n\n⏳ <b>กำลัง${modeLabels[mode]}...</b>`);
+  const editOk = await editPreview(`${originalText}\n\n⏳ <b>กำลัง${modeLabels[mode] || "วิเคราะห์"}...</b>`);
   if (!editOk) return;
 
   try {
@@ -2826,8 +3039,20 @@ ${conversation}`;
     const { cleanReply } = await parseAndExecuteActions(env, reply);
     if (cleanReply) {
       await sendTelegram(env, chatId, cleanReply, null, true);
+
+      // Send copy buttons for suggested replies
+      const suggestions = parseSuggestions(cleanReply);
+      if (suggestions) {
+        const numEmoji = ['1️⃣', '2️⃣', '3️⃣', '4️⃣'];
+        const buttons = suggestions.map((s, i) => [{
+          text: `📋 ${numEmoji[i] || '▪️'} ${s.label}`,
+          copy_text: { text: s.text.substring(0, 256) }
+        }]);
+        await sendTelegramWithKeyboard(env, chatId, '📋 กดเพื่อคัดลอกข้อความตอบกลับ:', null, buttons);
+      }
     }
-    await editPreview(`${originalText}\n\n✅ <b>${modeLabels[mode]}แล้ว</b>`);
+    await updateAlertStatus("handled", modeLabels[mode]);
+    await editPreview(`${originalText}\n\n✅ <b>${modeLabels[mode] || "วิเคราะห์"}แล้ว</b>`);
   } catch (err) {
     console.error("handleProactiveAlertCallback error:", err.message, err.stack);
     await editPreview(`${originalText}\n\n❌ <b>เกิดข้อผิดพลาด</b> — ลองใหม่ภายหลังค่ะ`);
@@ -2851,7 +3076,7 @@ async function proactiveAlert(env) {
 
     if (overdue.length === 0) return;
 
-    let alert = "Friday Alert — งานค้างเกิน 24 ชม.\n\n";
+    let alert = "⏰ งานค้างเกิน 24 ชม. ค่ะ\n\n";
     for (const r of overdue) {
       const name = r.username ? `@${r.username}` : r.first_name || "Unknown";
       alert += `#${r.id} ${name}: "${r.promise_text}"\nสัญญาเมื่อ: ${r.created_at}\n\n`;
@@ -2864,48 +3089,140 @@ async function proactiveAlert(env) {
   }
 }
 
-// ===== Proactive Insight Alert — สแกนบทสนทนาแจ้งเตือนเรื่องสำคัญ (Cron ทุก 3 ชม.) =====
+// ===== Proactive Insight Alert v2 — JSON output, dedup, urgency, per-group gathering =====
+
+// Robust JSON parser: tries multiple strategies to extract JSON from AI response
+function parseAlertJson(text) {
+  const strategies = [
+    // Strategy 1: Direct JSON parse
+    (t) => JSON.parse(t),
+    // Strategy 2: Extract ```json ... ``` block
+    (t) => {
+      const m = t.match(/```json\s*([\s\S]*?)```/);
+      return m ? JSON.parse(m[1]) : null;
+    },
+    // Strategy 3: Find first { ... } block
+    (t) => {
+      const start = t.indexOf("{");
+      const end = t.lastIndexOf("}");
+      if (start === -1 || end === -1 || end <= start) return null;
+      return JSON.parse(t.substring(start, end + 1));
+    },
+    // Strategy 4: Fallback — parse legacy ALERT|pipe|format
+    (t) => {
+      const lines = t.split("\n").filter(l => l.startsWith("ALERT|"));
+      if (lines.length === 0) return null;
+      return {
+        alerts: lines.map(line => {
+          const parts = line.split("|");
+          if (parts.length < 5) return null;
+          const categoryMap = { "💰": "money", "⚠️": "problem", "💡": "info", "📋": "decision", "👥": "mention" };
+          return {
+            chat_id: null,
+            urgency: "medium",
+            category: categoryMap[parts[1].trim()] || "info",
+            who: parts[2].trim(),
+            summary: parts[3].trim(),
+            group_title: parts[4].trim(),
+            topic_fingerprint: parts[3].trim().substring(0, 50),
+          };
+        }).filter(Boolean)
+      };
+    },
+  ];
+
+  for (const strategy of strategies) {
+    try {
+      const result = strategy(text);
+      if (result?.alerts?.length > 0) return result;
+    } catch (e) { /* try next strategy */ }
+  }
+  return null;
+}
 
 async function proactiveInsightAlert(env) {
   try {
     const bossId = env.BOSS_USER_ID;
 
-    // ดึงข้อความ 3 ชม. ล่าสุดจากทุกกลุ่ม
-    const { results } = await env.DB
-      .prepare(
-        `SELECT username, first_name, message_text, chat_title, chat_id,
-                datetime(created_at, '+7 hours') as created_at
-         FROM messages
-         WHERE chat_title IS NOT NULL AND created_at > datetime('now', '-3 hours')
-         ORDER BY created_at ASC LIMIT 300`
-      )
-      .all();
-
-    if (results.length === 0) return;
-
-    // จัดกลุ่มข้อความตาม chat
-    const byGroup = {};
-    for (const msg of results) {
-      const key = msg.chat_id;
-      if (!byGroup[key]) byGroup[key] = { title: msg.chat_title, msgs: [] };
-      byGroup[key].msgs.push(msg);
-    }
-
-    // สร้าง mapping title → chat_id สำหรับ inline buttons
-    const titleToChatId = {};
-    for (const [cid, g] of Object.entries(byGroup)) {
-      titleToChatId[g.title] = cid;
+    // Per-group message gathering: query groups from group_registry with priority_weight
+    let groups;
+    try {
+      const { results: registeredGroups } = await env.DB
+        .prepare(
+          `SELECT chat_id, chat_title, priority_weight
+           FROM group_registry
+           WHERE is_active = 1 AND last_message_at > datetime('now', '-24 hours')
+           ORDER BY priority_weight DESC`
+        )
+        .all();
+      groups = registeredGroups;
+    } catch (e) {
+      // Fallback if group_registry doesn't exist yet (pre-migration)
+      groups = null;
     }
 
     let messageContext = "";
-    for (const group of Object.values(byGroup)) {
-      messageContext += `=== กลุ่ม: ${group.title} ===\n`;
-      for (const msg of group.msgs) {
-        const name = msg.username ? `@${msg.username}` : msg.first_name || "Unknown";
-        messageContext += `[${msg.created_at}] ${name}: ${msg.message_text}\n`;
+    const chatIdMap = {}; // chat_id → title mapping
+
+    if (groups && groups.length > 0) {
+      // Per-group gathering with priority-based limits
+      for (const group of groups) {
+        const weight = group.priority_weight || 1.0;
+        const limit = weight >= 2.0 ? 150 : weight >= 1.0 ? 80 : 30;
+        const { results: msgs } = await env.DB
+          .prepare(
+            `SELECT username, first_name, message_text, chat_title, chat_id,
+                    datetime(created_at, '+7 hours') as created_at
+             FROM messages
+             WHERE chat_id = ? AND created_at > datetime('now', '-4 hours')
+             ORDER BY created_at ASC LIMIT ?`
+          )
+          .bind(group.chat_id, limit)
+          .all();
+
+        if (msgs.length === 0) continue;
+
+        const title = msgs[0].chat_title || group.chat_title || "Unknown";
+        chatIdMap[group.chat_id] = title;
+        messageContext += `=== กลุ่ม: ${title} (chat_id: ${group.chat_id}) ===\n`;
+        for (const msg of msgs) {
+          const name = msg.username ? `@${msg.username}` : msg.first_name || "Unknown";
+          messageContext += `[${msg.created_at}] ${name}: ${msg.message_text}\n`;
+        }
+        messageContext += "\n";
       }
-      messageContext += "\n";
+    } else {
+      // Fallback: flat query (pre-migration compatibility)
+      const { results } = await env.DB
+        .prepare(
+          `SELECT username, first_name, message_text, chat_title, chat_id,
+                  datetime(created_at, '+7 hours') as created_at
+           FROM messages
+           WHERE chat_title IS NOT NULL AND created_at > datetime('now', '-4 hours')
+           ORDER BY created_at ASC LIMIT 300`
+        )
+        .all();
+
+      if (results.length === 0) return;
+
+      const byGroup = {};
+      for (const msg of results) {
+        if (!byGroup[msg.chat_id]) byGroup[msg.chat_id] = { title: msg.chat_title, msgs: [] };
+        byGroup[msg.chat_id].msgs.push(msg);
+      }
+
+      for (const [cid, group] of Object.entries(byGroup)) {
+        chatIdMap[cid] = group.title;
+        messageContext += `=== กลุ่ม: ${group.title} (chat_id: ${cid}) ===\n`;
+        for (const msg of group.msgs) {
+          const name = msg.username ? `@${msg.username}` : msg.first_name || "Unknown";
+          messageContext += `[${msg.created_at}] ${name}: ${msg.message_text}\n`;
+        }
+        messageContext += "\n";
+      }
     }
+
+    if (!messageContext) return;
 
     // ดึง memories เป็น context เสริม
     const { results: memories } = await env.DB
@@ -2917,33 +3234,86 @@ async function proactiveInsightAlert(env) {
       messageContext += memories.map((m) => `(${m.category}) ${m.content}`).join("\n");
     }
 
-    // ใช้ Gemini วิเคราะห์หาเรื่องสำคัญ
+    // ดึง recent alerts เพื่อป้องกัน dedup
+    let recentAlertContext = "";
+    try {
+      const { results: recentAlerts } = await env.DB
+        .prepare(
+          `SELECT topic_fingerprint, summary, chat_title, created_at
+           FROM alerts
+           WHERE created_at > datetime('now', '-12 hours')
+           ORDER BY created_at DESC LIMIT 20`
+        )
+        .all();
+      if (recentAlerts.length > 0) {
+        recentAlertContext = "\n\n=== ALERTS ที่แจ้งไปแล้ว (ห้ามแจ้งซ้ำ) ===\n";
+        recentAlertContext += recentAlerts.map(a =>
+          `- [${a.chat_title}] ${a.summary} (fingerprint: ${a.topic_fingerprint})`
+        ).join("\n");
+      }
+    } catch (e) { /* alerts table may not exist yet */ }
+
+    // ดึง boss feedback context
+    let feedbackContext = "";
+    try {
+      const { results: groupStats } = await env.DB
+        .prepare(
+          `SELECT g.chat_title, g.priority_weight,
+                  COUNT(CASE WHEN a.status IN ('analyzing','handled') THEN 1 END) as analyzed,
+                  COUNT(CASE WHEN a.status = 'dismissed' THEN 1 END) as dismissed
+           FROM group_registry g
+           LEFT JOIN alerts a ON g.chat_id = a.chat_id AND a.created_at > datetime('now', '-7 days')
+           WHERE g.is_active = 1
+           GROUP BY g.chat_id
+           HAVING analyzed + dismissed > 0
+           ORDER BY g.priority_weight DESC`
+        )
+        .all();
+      if (groupStats.length > 0) {
+        feedbackContext = "\n\n=== Boss feedback pattern ===\n";
+        feedbackContext += groupStats.map(s =>
+          `${s.chat_title}: weight=${s.priority_weight}, วิเคราะห์=${s.analyzed}ครั้ง, ปัดทิ้ง=${s.dismissed}ครั้ง`
+        ).join("\n");
+      }
+    } catch (e) { /* ignore */ }
+
+    // ใช้ Gemini วิเคราะห์หาเรื่องสำคัญ — JSON output format
     const analysisPrompt = `คุณคือ Friday AI ผู้ช่วยส่วนตัว ทำหน้าที่เฝ้าดูบทสนทนาในกลุ่มต่างๆ ของนาย (บอส)
 
-วิเคราะห์ข้อความล่าสุด 3 ชั่วโมงด้านล่าง หาเรื่องสำคัญที่นายควรรู้
+วิเคราะห์ข้อความล่าสุดด้านล่าง หาเรื่องสำคัญที่นายควรรู้
 
-ประเภทเรื่องสำคัญ:
-- 💰 เรื่องเงิน/ค่าใช้จ่าย/การชำระ/invoice/ราคา
-- ⚠️ ปัญหา/ความเสี่ยง/ข้อผิดพลาด/ระบบล่ม/เรื่องด่วน
-- 💡 ข้อมูลสำคัญ/update ที่ควรรู้/ตัวเลขสำคัญ
-- 📋 งานที่ต้องตัดสินใจ/อนุมัติ/รออนุมัติ
-- 👥 คนสำคัญพูดถึงนาย/ต้องการการตอบสนอง
+ประเภทและ urgency:
+- 🔴 critical — ระบบล่ม, เงินหาย, เรื่องด่วนสุด (category: "problem" หรือ "money")
+- 🟠 high — deadline, ลูกค้าร้องเรียน, ต้องตัดสินใจเร่ง (category: "decision" หรือ "problem")
+- 🟡 medium — update สำคัญ, รอตัดสินใจ (category: "info" หรือ "decision")
+- 🟢 low — FYI, ข้อมูลทั่วไปที่ควรรู้ (category: "info" หรือ "mention")
 
 ถ้าไม่มีเรื่องสำคัญเลย ตอบแค่ NONE
 
-ถ้ามี ตอบในรูปแบบนี้ (แต่ละรายการ 1 บรรทัด):
-ALERT|emoji|ชื่อคนที่พูด|สรุปสั้นๆ|ชื่อกลุ่ม
-
-ตัวอย่าง:
-ALERT|💰|mind|แจ้งค่าบริการเดือนมีนาคม 15,000 บาท รอชำระ|กลุ่มบัญชี
-ALERT|⚠️|dev_joe|เซิร์ฟเวอร์ DB replica lag สูง 30 วินาที|DevOps Team
-ALERT|💡|sarah|ลูกค้ารายใหม่ต้องการ demo สัปดาห์หน้า|Sales Team
+ถ้ามี ตอบเป็น JSON เท่านั้น:
+\`\`\`json
+{
+  "alerts": [
+    {
+      "chat_id": -100xxx,
+      "urgency": "critical|high|medium|low",
+      "category": "money|problem|decision|info|mention",
+      "who": "username",
+      "summary": "สรุปสั้นๆ",
+      "topic_fingerprint": "คำสำคัญ 3-5 คำ เช่น server-down-db-replica"
+    }
+  ]
+}
+\`\`\`
 
 กฎ:
-- สรุปให้กระชับ 1 บรรทัด ไม่เกิน 2 ประโยค
-- เฉพาะเรื่องที่นายต้องรู้จริงๆ ไม่ใช่บทสนทนาทั่วไปหรือเรื่องเล็กน้อย
-- ห้ามแต่งเรื่อง ต้องอ้างอิงจากข้อมูลในบทสนทนาจริงเท่านั้น
-- ชื่อคนที่พูดให้ใช้ username หรือ first_name ตามที่ปรากฏ`;
+- chat_id ต้องตรงกับที่ระบุใน header ของแต่ละกลุ่ม
+- สรุปให้กระชับ ไม่เกิน 2 ประโยค
+- เฉพาะเรื่องที่นายต้องรู้จริงๆ ไม่ใช่บทสนทนาทั่วไป
+- ห้ามแต่งเรื่อง ต้องอ้างอิงจากข้อมูลจริง
+- ชื่อคนให้ใช้ username หรือ first_name ตามที่ปรากฏ
+- topic_fingerprint ต้องเป็น keyword ภาษาอังกฤษ ใช้ - คั่น
+- ห้ามแจ้งเรื่องที่อยู่ในรายการ "ALERTS ที่แจ้งไปแล้ว"`;
 
     const model = "gemini-2.5-flash";
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${env.GEMINI_API_KEY}`;
@@ -2953,8 +3323,8 @@ ALERT|💡|sarah|ลูกค้ารายใหม่ต้องการ de
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         system_instruction: { parts: [{ text: analysisPrompt }] },
-        contents: [{ role: "user", parts: [{ text: messageContext }] }],
-        generationConfig: { maxOutputTokens: 1024 },
+        contents: [{ role: "user", parts: [{ text: messageContext + recentAlertContext + feedbackContext }] }],
+        generationConfig: { maxOutputTokens: 2048 },
       }),
     });
 
@@ -2978,31 +3348,102 @@ ALERT|💡|sarah|ลูกค้ารายใหม่ต้องการ de
 
     if (!replyText || replyText.trim() === "NONE") return;
 
-    // Parse ALERT lines แล้วส่งแจ้งเตือนทีละรายการ
-    const lines = replyText.split("\n").filter((l) => l.startsWith("ALERT|"));
-    for (const line of lines) {
-      const parts = line.split("|");
-      if (parts.length < 5) continue;
-      const emoji = parts[1].trim();
-      const who = parts[2].trim();
-      const summary = parts[3].trim();
-      const group = parts[4].trim();
+    // Parse JSON response (with fallback strategies)
+    const parsed = parseAlertJson(replyText);
+    if (!parsed?.alerts?.length) return;
 
-      const groupChatId = titleToChatId[group];
-      if (groupChatId) {
-        const esc = s => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-        const alertMsg = `${emoji} Proactive Alert\n\n${emoji} ${esc(who)}: ${esc(summary)}\n\n📁 กลุ่ม: ${esc(group)}`;
-        await sendTelegramWithKeyboard(env, bossId, alertMsg, null, [
-          [
-            { text: "📋 วิเคราะห์สั้น", callback_data: `pa:s:${groupChatId}` },
-            { text: "📝 วิเคราะห์ละเอียด", callback_data: `pa:d:${groupChatId}` },
-          ],
-        ]);
-      } else {
-        const alertMsg = `${emoji} Proactive Alert\n\n${emoji} ${who}: ${summary}\n\n📁 กลุ่ม: ${group}`;
-        await sendTelegram(env, bossId, alertMsg, null);
+    // Urgency sorting: critical → high → medium → low
+    const urgencyOrder = { critical: 0, high: 1, medium: 2, low: 3 };
+    parsed.alerts.sort((a, b) => (urgencyOrder[a.urgency] ?? 3) - (urgencyOrder[b.urgency] ?? 3));
+
+    const urgencyEmoji = { critical: "🔴", high: "🟠", medium: "🟡", low: "🟢" };
+    const categoryEmoji = { money: "💰", problem: "⚠️", decision: "📋", info: "💡", mention: "👥" };
+    const esc = s => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+    for (const alert of parsed.alerts) {
+      // Resolve chat_id: use AI-provided or try to match group_title
+      let groupChatId = alert.chat_id ? String(alert.chat_id) : null;
+      let groupTitle = "";
+
+      if (groupChatId && chatIdMap[groupChatId]) {
+        groupTitle = chatIdMap[groupChatId];
+      } else if (alert.group_title) {
+        // Legacy fallback: try to match by title
+        for (const [cid, title] of Object.entries(chatIdMap)) {
+          if (title === alert.group_title) {
+            groupChatId = cid;
+            groupTitle = title;
+            break;
+          }
+        }
       }
+
+      if (!groupChatId) continue;
+      if (!groupTitle) groupTitle = alert.group_title || "Unknown";
+
+      // Dedup: check topic_fingerprint in last 12 hours
+      if (alert.topic_fingerprint) {
+        try {
+          const { results: dupes } = await env.DB
+            .prepare(
+              `SELECT id FROM alerts
+               WHERE topic_fingerprint = ? AND created_at > datetime('now', '-12 hours')
+               LIMIT 1`
+            )
+            .bind(alert.topic_fingerprint)
+            .all();
+          if (dupes.length > 0) continue; // skip duplicate
+        } catch (e) { /* alerts table may not exist yet */ }
+      }
+
+      // Store alert in DB
+      let alertId = 0;
+      const alertHash = `insight-${groupChatId}-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
+      try {
+        const insertResult = await env.DB
+          .prepare(
+            `INSERT INTO alerts (alert_hash, chat_id, chat_title, urgency, category, who, summary, topic_fingerprint, status)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'new')`
+          )
+          .bind(
+            alertHash,
+            Number(groupChatId),
+            groupTitle,
+            alert.urgency || "medium",
+            alert.category || "info",
+            alert.who || null,
+            alert.summary,
+            alert.topic_fingerprint || null,
+          )
+          .run();
+        alertId = insertResult.meta?.last_row_id || 0;
+      } catch (e) { console.error("Alert insert error:", e); }
+
+      // Build alert message with urgency visual
+      const uEmoji = urgencyEmoji[alert.urgency] || "🟡";
+      const cEmoji = categoryEmoji[alert.category] || "💡";
+      const urgencyLabel = alert.urgency === "critical" ? " <b>URGENT</b>" : "";
+      const alertMsg = `${uEmoji}${urgencyLabel} Proactive Alert ${cEmoji}\n\n${cEmoji} ${esc(alert.who || "")}: ${esc(alert.summary)}\n\n📁 กลุ่ม: ${esc(groupTitle)}`;
+
+      await sendTelegramWithKeyboard(env, bossId, alertMsg, null, [
+        [
+          { text: "📋 วิเคราะห์สั้น", callback_data: `pa:s:${groupChatId}:${alertId}` },
+          { text: "📝 วิเคราะห์ละเอียด", callback_data: `pa:d:${groupChatId}:${alertId}` },
+        ],
+        [
+          { text: "✅ จัดการแล้ว", callback_data: `pa:h:${groupChatId}:${alertId}` },
+          { text: "❌ ไม่สำคัญ", callback_data: `pa:x:${groupChatId}:${alertId}` },
+        ],
+      ]);
     }
+
+    // Expire old unhandled alerts (>24h)
+    try {
+      await env.DB.prepare(
+        `UPDATE alerts SET status = 'expired' WHERE status = 'new' AND created_at < datetime('now', '-24 hours')`
+      ).run();
+    } catch (e) { /* ignore */ }
+
   } catch (err) {
     console.error("Proactive insight alert error:", err);
   }
