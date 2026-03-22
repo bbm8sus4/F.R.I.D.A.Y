@@ -56,9 +56,239 @@ function parseCommand(text) {
   return { cmd: `/${match[1]}`, args: match[3] || "" };
 }
 
+// ===== Telegram Mini App Auth Validator =====
+async function validateTelegramWebApp(authHeader, env) {
+  if (!authHeader?.startsWith("tma ")) return null;
+  const initData = authHeader.slice(4);
+  const params = new URLSearchParams(initData);
+  const hash = params.get("hash");
+  if (!hash) return null;
+  params.delete("hash");
+
+  const entries = [...params.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+  const dataCheckString = entries.map(([k, v]) => `${k}=${v}`).join("\n");
+
+  const encoder = new TextEncoder();
+  const secretKey = await crypto.subtle.importKey(
+    "raw", encoder.encode("WebAppData"), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]
+  );
+  const secretHash = await crypto.subtle.sign("HMAC", secretKey, encoder.encode(env.TELEGRAM_BOT_TOKEN));
+  const validationKey = await crypto.subtle.importKey(
+    "raw", secretHash, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]
+  );
+  const signature = await crypto.subtle.sign("HMAC", validationKey, encoder.encode(dataCheckString));
+  const computedHash = [...new Uint8Array(signature)].map(b => b.toString(16).padStart(2, "0")).join("");
+
+  if (computedHash !== hash) return null;
+  const authDate = Number(params.get("auth_date"));
+  if (Date.now() / 1000 - authDate > 86400) return null;
+
+  try { return JSON.parse(params.get("user")); } catch { return null; }
+}
+
+// ===== Dashboard API Handler =====
+async function handleApiRequest(request, url, env) {
+  const headers = {
+    "Content-Type": "application/json",
+    "Access-Control-Allow-Origin": env.DASHBOARD_URL || "*",
+    "Access-Control-Allow-Methods": "GET, POST, PATCH, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization",
+  };
+
+  if (request.method === "OPTIONS") return new Response(null, { status: 204, headers });
+
+  const path = url.pathname.replace("/api", "");
+  const method = request.method;
+
+  try {
+    const user = await validateTelegramWebApp(request.headers.get("Authorization"), env);
+    if (!user || user.id !== Number(env.BOSS_USER_ID)) {
+      return new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401, headers });
+    }
+    // GET /api/dashboard — overview stats
+    if (path === "/dashboard" && method === "GET") {
+      const safeQuery = (query) => query.catch(() => null);
+      const [pending, alertCounts, memoryCount, msgStats, groups] = await Promise.all([
+        env.DB.prepare(`SELECT COUNT(*) as count FROM commitments WHERE status = 'pending'`).first(),
+        safeQuery(env.DB.prepare(`SELECT urgency, COUNT(*) as count FROM alerts WHERE created_at > datetime('now', '-7 days') GROUP BY urgency`).all()),
+        env.DB.prepare(`SELECT COUNT(*) as count FROM memories`).first(),
+        env.DB.prepare(`SELECT COUNT(*) as total, COUNT(DISTINCT chat_id) as chats FROM messages WHERE created_at > datetime('now', '-24 hours')`).first(),
+        safeQuery(env.DB.prepare(`SELECT chat_id, chat_title, priority_weight, last_message_at, is_active FROM group_registry WHERE is_active = 1 ORDER BY priority_weight DESC`).all()),
+      ]);
+
+      return new Response(JSON.stringify({
+        commitments: { pending: pending.count },
+        alerts: Object.fromEntries((alertCounts?.results || []).map(r => [r.urgency, r.count])),
+        memories: { total: memoryCount.count },
+        messages: { last24h: msgStats.total, activeChats: msgStats.chats },
+        groups: groups?.results || [],
+      }), { headers });
+    }
+
+    // GET /api/commitments — list with filters
+    if (path === "/commitments" && method === "GET") {
+      const status = url.searchParams.get("status") || "pending";
+      const chatId = url.searchParams.get("chat_id");
+      const page = Math.max(1, Number(url.searchParams.get("page")) || 1);
+      const limit = Math.min(50, Math.max(1, Number(url.searchParams.get("limit")) || 20));
+      const offset = (page - 1) * limit;
+
+      let where = `WHERE status = ?`;
+      const params = [status];
+      if (chatId) { where += ` AND chat_id = ?`; params.push(Number(chatId)); }
+
+      const countResult = await env.DB.prepare(`SELECT COUNT(*) as total FROM commitments ${where}`).bind(...params).first();
+      const { results } = await env.DB.prepare(
+        `SELECT id, chat_id, user_id, username, first_name, promise_text, status,
+                datetime(created_at, '+7 hours') as created_at,
+                datetime(resolved_at, '+7 hours') as resolved_at
+         FROM commitments ${where} ORDER BY created_at DESC LIMIT ? OFFSET ?`
+      ).bind(...params, limit, offset).all();
+
+      return new Response(JSON.stringify({
+        data: results, total: countResult.total, page, limit,
+      }), { headers });
+    }
+
+    // PATCH /api/commitments/:id/resolve
+    const resolveMatch = path.match(/^\/commitments\/(\d+)\/resolve$/);
+    if (resolveMatch && method === "PATCH") {
+      const id = Number(resolveMatch[1]);
+      await env.DB.prepare(
+        `UPDATE commitments SET status = 'resolved', resolved_at = datetime('now') WHERE id = ? AND status = 'pending'`
+      ).bind(id).run();
+      return new Response(JSON.stringify({ ok: true, id }), { headers });
+    }
+
+    // PATCH /api/commitments/resolve-bulk
+    if (path === "/commitments/resolve-bulk" && method === "PATCH") {
+      const body = await request.json();
+      if (body.all) {
+        const result = await env.DB.prepare(
+          `UPDATE commitments SET status = 'resolved', resolved_at = datetime('now') WHERE status = 'pending'`
+        ).run();
+        return new Response(JSON.stringify({ ok: true, resolved: result.meta.changes }), { headers });
+      }
+      if (Array.isArray(body.ids) && body.ids.length > 0) {
+        const placeholders = body.ids.map(() => "?").join(",");
+        const result = await env.DB.prepare(
+          `UPDATE commitments SET status = 'resolved', resolved_at = datetime('now') WHERE id IN (${placeholders}) AND status = 'pending'`
+        ).bind(...body.ids.map(Number)).run();
+        return new Response(JSON.stringify({ ok: true, resolved: result.meta.changes }), { headers });
+      }
+      return new Response(JSON.stringify({ error: "Provide ids array or all:true" }), { status: 400, headers });
+    }
+
+    // GET /api/alerts — list with filters
+    if (path === "/alerts" && method === "GET") {
+      try {
+        const urgency = url.searchParams.get("urgency");
+        const alertStatus = url.searchParams.get("status");
+        const chatId = url.searchParams.get("chat_id");
+        const page = Math.max(1, Number(url.searchParams.get("page")) || 1);
+        const limit = Math.min(50, Math.max(1, Number(url.searchParams.get("limit")) || 20));
+        const offset = (page - 1) * limit;
+
+        let where = "WHERE 1=1";
+        const params = [];
+        if (urgency) { where += ` AND urgency = ?`; params.push(urgency); }
+        if (alertStatus) { where += ` AND status = ?`; params.push(alertStatus); }
+        if (chatId) { where += ` AND chat_id = ?`; params.push(Number(chatId)); }
+
+        const countResult = await env.DB.prepare(`SELECT COUNT(*) as total FROM alerts ${where}`).bind(...params).first();
+        const { results } = await env.DB.prepare(
+          `SELECT id, chat_id, chat_title, urgency, category, who, summary, status, boss_action,
+                  datetime(created_at, '+7 hours') as created_at
+           FROM alerts ${where} ORDER BY created_at DESC LIMIT ? OFFSET ?`
+        ).bind(...params, limit, offset).all();
+
+        return new Response(JSON.stringify({
+          data: results, total: countResult.total, page, limit,
+        }), { headers });
+      } catch {
+        return new Response(JSON.stringify({ data: [], total: 0, page: 1, limit: 20 }), { headers });
+      }
+    }
+
+    // GET /api/alerts/patterns — aggregated stats
+    if (path === "/alerts/patterns" && method === "GET") {
+      const safeQ = (q) => q.catch(() => ({ results: [] }));
+      const [byGroup, byCategory, byDay, byUrgency] = await Promise.all([
+        safeQ(env.DB.prepare(
+          `SELECT chat_title, COUNT(*) as count FROM alerts WHERE created_at > datetime('now', '-30 days') AND chat_title IS NOT NULL GROUP BY chat_title ORDER BY count DESC LIMIT 10`
+        ).all()),
+        safeQ(env.DB.prepare(
+          `SELECT category, COUNT(*) as count FROM alerts WHERE created_at > datetime('now', '-30 days') GROUP BY category ORDER BY count DESC LIMIT 10`
+        ).all()),
+        safeQ(env.DB.prepare(
+          `SELECT date(created_at, '+7 hours') as day, COUNT(*) as count FROM alerts WHERE created_at > datetime('now', '-14 days') GROUP BY day ORDER BY day`
+        ).all()),
+        safeQ(env.DB.prepare(
+          `SELECT urgency, COUNT(*) as count FROM alerts WHERE created_at > datetime('now', '-30 days') GROUP BY urgency`
+        ).all()),
+      ]);
+
+      return new Response(JSON.stringify({
+        byGroup: byGroup.results || [],
+        byCategory: byCategory.results || [],
+        byDay: byDay.results || [],
+        byUrgency: byUrgency.results || [],
+      }), { headers });
+    }
+
+    // GET /api/memories — list with filters
+    if (path === "/memories" && method === "GET") {
+      const priority = url.searchParams.get("priority");
+      const page = Math.max(1, Number(url.searchParams.get("page")) || 1);
+      const limit = Math.min(50, Math.max(1, Number(url.searchParams.get("limit")) || 20));
+      const offset = (page - 1) * limit;
+
+      let where = "WHERE 1=1";
+      const params = [];
+      if (priority) { where += ` AND priority = ?`; params.push(priority); }
+
+      const countResult = await env.DB.prepare(`SELECT COUNT(*) as total FROM memories ${where}`).bind(...params).first();
+      const { results } = await env.DB.prepare(
+        `SELECT id, content, category, priority, datetime(created_at, '+7 hours') as created_at
+         FROM memories ${where}
+         ORDER BY CASE priority WHEN 'hot' THEN 1 WHEN 'warm' THEN 2 WHEN 'cold' THEN 3 ELSE 4 END, created_at DESC
+         LIMIT ? OFFSET ?`
+      ).bind(...params, limit, offset).all();
+
+      return new Response(JSON.stringify({
+        data: results, total: countResult.total, page, limit,
+      }), { headers });
+    }
+
+    // GET /api/groups — group registry
+    if (path === "/groups" && method === "GET") {
+      try {
+        const { results } = await env.DB.prepare(
+          `SELECT chat_id, chat_title, priority_weight, last_message_at, is_active FROM group_registry ORDER BY priority_weight DESC`
+        ).all();
+        return new Response(JSON.stringify({ data: results || [] }), { headers });
+      } catch {
+        return new Response(JSON.stringify({ data: [] }), { headers });
+      }
+    }
+
+    return new Response(JSON.stringify({ error: "Not found" }), { status: 404, headers });
+  } catch (err) {
+    console.error("API error:", err?.message, err?.stack);
+    return new Response(JSON.stringify({ error: err?.message || "Internal server error" }), { status: 500, headers });
+  }
+}
+
 export default {
   // ===== Webhook Handler =====
   async fetch(request, env, ctx) {
+    const url = new URL(request.url);
+
+    // API routes for Mini App
+    if (url.pathname.startsWith("/api/")) {
+      return handleApiRequest(request, url, env);
+    }
+
     if (request.method !== "POST") {
       return new Response("Friday is watching.", { status: 200 });
     }
@@ -275,6 +505,7 @@ export default {
           "/readpdf": () => handleReadpdfCommand(env, message, parsed.args),
           "/readimg": () => handleReadimgCommand(env, message, parsed.args),
           "/delete": () => handleDeleteCommand(env, message),
+          "/dashboard": () => handleDashboardCommand(env, message),
           "/menu": () => sendReplyKeyboard(env, message.chat.id),
           "/start": () => sendReplyKeyboard(env, message.chat.id),
         };
@@ -1264,6 +1495,7 @@ async function sendReplyKeyboard(env, chatId) {
         keyboard: [
           [{ text: "📋 Pending" }, { text: "🧠 Memories" }],
           [{ text: "📨 Send" }, { text: "🗑 Delete" }],
+          [{ text: "📊 Dashboard", web_app: { url: env.DASHBOARD_URL || "https://friday-dashboard.pages.dev" } }],
         ],
         resize_keyboard: true,
         is_persistent: true,
@@ -2670,6 +2902,13 @@ async function executeDeleteAllGroups(env, callbackQuery) {
       reply_markup: { inline_keyboard: [] },
     }),
   });
+}
+
+async function handleDashboardCommand(env, message) {
+  const dashUrl = env.DASHBOARD_URL || "https://friday-dashboard.pages.dev";
+  await sendTelegramWithKeyboard(env, message.chat.id, "📊 Friday Dashboard", null, [
+    [{ text: "Open Dashboard", web_app: { url: dashUrl } }],
+  ]);
 }
 
 async function handlePendingCommand(env, message) {
