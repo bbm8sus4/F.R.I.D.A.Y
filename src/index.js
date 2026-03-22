@@ -27,23 +27,31 @@ const MAX_PDF_SIZE = 10 * 1024 * 1024; // 10MB
 // ===== Helper: ตรวจจับการแท็กบอสในกลุ่ม =====
 function detectBossMention(message, bossId, bossUsername) {
   // 1. Telegram entity mentions (text_mention + @username)
-  const entities = message.entities || message.caption_entities || [];
-  for (const e of entities) {
+  // Check both text entities and caption entities separately
+  const textEntities = message.entities || [];
+  const captionEntities = message.caption_entities || [];
+  const allEntities = [...textEntities, ...captionEntities];
+  const msgText = message.text || message.caption || "";
+
+  for (const e of allEntities) {
     if (e.type === "text_mention" && e.user?.id === bossId) return "tag";
     if (e.type === "mention" && bossUsername) {
-      const text = message.text || message.caption || "";
-      const mentioned = text.substring(e.offset + 1, e.offset + e.length);
+      const mentioned = msgText.substring(e.offset + 1, e.offset + e.length);
       if (mentioned.toLowerCase() === bossUsername.toLowerCase()) return "tag";
     }
   }
 
-  // 2. Reply to boss's message
-  if (message.reply_to_message?.from?.id === bossId) return "reply";
+  // 2. Reply to boss's message (skip forum topic auto-replies)
+  if (message.reply_to_message?.from?.id === bossId
+      && !message.is_topic_message
+      && !message.reply_to_message?.forum_topic_created
+      && !message.reply_to_message?.forum_topic_edited) return "reply";
 
-  // 3. Keyword mention — ชื่อเล่น/คำเรียกบอส
-  const text = (message.text || message.caption || "").toLowerCase();
+  // 3. Keyword mention — ชื่อเล่น/คำเรียกบอส (skip if no text)
+  if (!msgText) return false;
+  const textLower = msgText.toLowerCase();
   const bossNicknames = ["บ๊อบ", "บ๊อบบี้", "จารย์บ๊อบ", "พี่บ๊อบ", "ครับบ๊อบ", "บ๊อบครับ", "พ่อใหญ่บ๊อบ", "bob"];
-  if (bossNicknames.some(nick => text.includes(nick.toLowerCase()))) return "nickname";
+  if (bossNicknames.some(nick => textLower.includes(nick.toLowerCase()))) return "nickname";
 
   return false;
 }
@@ -390,6 +398,7 @@ export default {
       // แจ้งเตือนบอสเมื่อมีคนแท็ก/reply/เอ่ยถึงในกลุ่ม
       const mentionType = detectBossMention(message, bossId, env.BOSS_USERNAME);
       if (!isDM && !isBoss && mentionType) {
+        console.log("Boss mention detected:", mentionType, "from:", message.from?.first_name, "text:", (text || "").substring(0, 50), "entities:", JSON.stringify(message.entities || message.caption_entities || []).substring(0, 200), "is_topic:", message.is_topic_message, "reply_to:", message.reply_to_message?.from?.id);
         const headers = {
           tag:      "📢 มีคนแท็กนายค่ะ!",
           reply:    "💬 มีคน Reply ข้อความนายค่ะ!",
@@ -1495,7 +1504,7 @@ async function sendReplyKeyboard(env, chatId) {
         keyboard: [
           [{ text: "📋 Pending" }, { text: "🧠 Memories" }],
           [{ text: "📨 Send" }, { text: "🗑 Delete" }],
-          [{ text: "📊 Dashboard", web_app: { url: env.DASHBOARD_URL || "https://friday-dashboard.pages.dev" } }],
+          [{ text: "📊 Dashboard", web_app: { url: env.DASHBOARD_URL || "https://friday-dashboard-3rf.pages.dev" } }],
         ],
         resize_keyboard: true,
         is_persistent: true,
@@ -2905,7 +2914,7 @@ async function executeDeleteAllGroups(env, callbackQuery) {
 }
 
 async function handleDashboardCommand(env, message) {
-  const dashUrl = env.DASHBOARD_URL || "https://friday-dashboard.pages.dev";
+  const dashUrl = env.DASHBOARD_URL || "https://friday-dashboard-3rf.pages.dev";
   await sendTelegramWithKeyboard(env, message.chat.id, "📊 Friday Dashboard", null, [
     [{ text: "Open Dashboard", web_app: { url: dashUrl } }],
   ]);

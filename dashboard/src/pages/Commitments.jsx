@@ -28,18 +28,22 @@ export default function Commitments() {
     });
   }, []);
 
+  const [resolveError, setResolveError] = useState(null);
+
   const resolveOne = useCallback(async (id) => {
     setResolving(true);
+    setResolveError(null);
     try {
       await apiFetch(`/api/commitments/${id}/resolve`, { method: "PATCH" });
       refetch();
       setSelected((prev) => { const n = new Set(prev); n.delete(id); return n; });
-    } finally { setResolving(false); }
+    } catch (e) { setResolveError(e.message); } finally { setResolving(false); }
   }, [refetch]);
 
   const resolveBulk = useCallback(async () => {
     if (selected.size === 0) return;
     setResolving(true);
+    setResolveError(null);
     try {
       await apiFetch("/api/commitments/resolve-bulk", {
         method: "PATCH",
@@ -47,11 +51,12 @@ export default function Commitments() {
       });
       setSelected(new Set());
       refetch();
-    } finally { setResolving(false); }
+    } catch (e) { setResolveError(e.message); } finally { setResolving(false); }
   }, [selected, refetch]);
 
   const resolveAll = useCallback(async () => {
     setResolving(true);
+    setResolveError(null);
     try {
       await apiFetch("/api/commitments/resolve-bulk", {
         method: "PATCH",
@@ -59,7 +64,7 @@ export default function Commitments() {
       });
       setSelected(new Set());
       refetch();
-    } finally { setResolving(false); }
+    } catch (e) { setResolveError(e.message); } finally { setResolving(false); }
   }, [refetch]);
 
   const totalPages = data ? Math.ceil(data.total / 20) : 1;
@@ -80,7 +85,7 @@ export default function Commitments() {
       )}
 
       {loading && <div className="loading"><div className="spinner" /><p>Loading...</p></div>}
-      {error && <div className="error-state">Error: {error}</div>}
+      {(error || resolveError) && <div className="error-state">Error: {error || resolveError}</div>}
 
       {!loading && data?.data?.length === 0 && (
         <EmptyState message={status === "pending" ? "No pending commitments" : "No resolved commitments"} />
