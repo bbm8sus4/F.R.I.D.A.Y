@@ -763,6 +763,49 @@ function extractKeywords(text) {
   return [...new Set(words)].slice(0, 5);
 }
 
+function parseDateRange(text) {
+  const thaiMonths = {
+    'มกรา': '01', 'มกราคม': '01', 'ม.ค.': '01', 'ม.ค': '01',
+    'กุมภา': '02', 'กุมภาพันธ์': '02', 'ก.พ.': '02', 'ก.พ': '02',
+    'มีนา': '03', 'มีนาคม': '03', 'มี.ค.': '03', 'มี.ค': '03',
+    'เมษา': '04', 'เมษายน': '04', 'เม.ย.': '04', 'เม.ย': '04',
+    'พฤษภา': '05', 'พฤษภาคม': '05', 'พ.ค.': '05', 'พ.ค': '05',
+    'มิถุนา': '06', 'มิถุนายน': '06', 'มิ.ย.': '06', 'มิ.ย': '06',
+    'กรกฎา': '07', 'กรกฎาคม': '07', 'ก.ค.': '07', 'ก.ค': '07',
+    'สิงหา': '08', 'สิงหาคม': '08', 'ส.ค.': '08', 'ส.ค': '08',
+    'กันยา': '09', 'กันยายน': '09', 'ก.ย.': '09', 'ก.ย': '09',
+    'ตุลา': '10', 'ตุลาคม': '10', 'ต.ค.': '10', 'ต.ค': '10',
+    'พฤศจิกา': '11', 'พฤศจิกายน': '11', 'พ.ย.': '11', 'พ.ย': '11',
+    'ธันวา': '12', 'ธันวาคม': '12', 'ธ.ค.': '12', 'ธ.ค': '12',
+  };
+  const monthNames = Object.keys(thaiMonths).sort((a, b) => b.length - a.length);
+  const monthPattern = monthNames.map(m => m.replace(/\./g, '\\.')).join('|');
+
+  // Range: "18 ถึง 23 มีนาคม" or "18-23 มี.ค."
+  const rangeRegex = new RegExp(`(\\d{1,2})\\s*(?:ถึง|-|–|~)\\s*(\\d{1,2})\\s*(${monthPattern})`);
+  const rangeMatch = text.match(rangeRegex);
+  if (rangeMatch) {
+    const month = thaiMonths[rangeMatch[3]];
+    const year = new Date().getFullYear();
+    return {
+      startDate: `${year}-${month}-${rangeMatch[1].padStart(2, '0')}`,
+      endDate: `${year}-${month}-${rangeMatch[2].padStart(2, '0')}`,
+    };
+  }
+
+  // Single date: "18 มีนาคม"
+  const singleRegex = new RegExp(`(\\d{1,2})\\s*(${monthPattern})`);
+  const singleMatch = text.match(singleRegex);
+  if (singleMatch) {
+    const month = thaiMonths[singleMatch[2]];
+    const year = new Date().getFullYear();
+    const date = `${year}-${month}-${singleMatch[1].padStart(2, '0')}`;
+    return { startDate: date, endDate: date };
+  }
+
+  return null;
+}
+
 function formatMessages(rows) {
   return rows
     .map((row) => {
@@ -907,16 +950,29 @@ async function getSmartContext(db, chatId, isDM, userQuery) {
       );
 
       // summaries ที่เกี่ยว (สูงสุด 8 อัน)
-      batch2Stmts.push(
-        db.prepare(
-          `SELECT chat_title, week_start, week_end, summary_text,
-                  COALESCE(summary_date, week_end) as summary_date,
-                  COALESCE(summary_type, 'weekly') as summary_type
-           FROM summaries
-           WHERE (${sumLikeConditions})
-           ORDER BY COALESCE(summary_date, week_end) DESC LIMIT 8`
-        ).bind(...likeParams)
-      );
+      if (isDM) {
+        batch2Stmts.push(
+          db.prepare(
+            `SELECT chat_title, week_start, week_end, summary_text,
+                    COALESCE(summary_date, week_end) as summary_date,
+                    COALESCE(summary_type, 'weekly') as summary_type
+             FROM summaries
+             WHERE (${sumLikeConditions})
+             ORDER BY COALESCE(summary_date, week_end) DESC LIMIT 8`
+          ).bind(...likeParams)
+        );
+      } else {
+        batch2Stmts.push(
+          db.prepare(
+            `SELECT chat_title, week_start, week_end, summary_text,
+                    COALESCE(summary_date, week_end) as summary_date,
+                    COALESCE(summary_type, 'weekly') as summary_type
+             FROM summaries
+             WHERE (${sumLikeConditions}) AND chat_id = ?
+             ORDER BY COALESCE(summary_date, week_end) DESC LIMIT 8`
+          ).bind(...likeParams, chatId)
+        );
+      }
 
       const batch2Results = await db.batch(batch2Stmts);
 
@@ -949,6 +1005,73 @@ async function getSmartContext(db, chatId, isDM, userQuery) {
     }
   } catch (kwErr) {
     console.error("Keyword search failed (non-fatal):", kwErr.message);
+  }
+
+  // ===== Batch 3 — ดึงตามช่วงวันที่ถ้าผู้ใช้ระบุ =====
+  try {
+    const dateRange = parseDateRange(userQuery || "");
+    if (dateRange) {
+      const dateStmts = [];
+      if (isDM) {
+        dateStmts.push(
+          db.prepare(
+            `SELECT username, first_name, message_text, datetime(created_at, '+7 hours') as created_at, chat_title
+             FROM messages
+             WHERE chat_title IS NOT NULL
+               AND date(created_at, '+7 hours') >= ? AND date(created_at, '+7 hours') <= ?
+             ORDER BY created_at ASC LIMIT 200`
+          ).bind(dateRange.startDate, dateRange.endDate)
+        );
+        dateStmts.push(
+          db.prepare(
+            `SELECT chat_title, summary_text, COALESCE(summary_date, week_end) as summary_date,
+                    COALESCE(summary_type, 'weekly') as summary_type
+             FROM summaries
+             WHERE COALESCE(summary_date, week_end) >= ? AND COALESCE(summary_date, week_end) <= ?
+             ORDER BY COALESCE(summary_date, week_end) ASC LIMIT 20`
+          ).bind(dateRange.startDate, dateRange.endDate)
+        );
+      } else {
+        dateStmts.push(
+          db.prepare(
+            `SELECT username, first_name, message_text, datetime(created_at, '+7 hours') as created_at, chat_title
+             FROM messages
+             WHERE chat_id = ?
+               AND date(created_at, '+7 hours') >= ? AND date(created_at, '+7 hours') <= ?
+             ORDER BY created_at ASC LIMIT 200`
+          ).bind(chatId, dateRange.startDate, dateRange.endDate)
+        );
+        dateStmts.push(
+          db.prepare(
+            `SELECT chat_title, summary_text, COALESCE(summary_date, week_end) as summary_date,
+                    COALESCE(summary_type, 'weekly') as summary_type
+             FROM summaries
+             WHERE chat_id = ? AND COALESCE(summary_date, week_end) >= ? AND COALESCE(summary_date, week_end) <= ?
+             ORDER BY COALESCE(summary_date, week_end) ASC LIMIT 20`
+          ).bind(chatId, dateRange.startDate, dateRange.endDate)
+        );
+      }
+
+      const dateResults = await db.batch(dateStmts);
+      const dateMessages = dateResults[0].results;
+      const dateSummaries = dateResults[1].results;
+
+      if (dateMessages.length > 0) {
+        context += `=== ข้อความในช่วง ${dateRange.startDate} ถึง ${dateRange.endDate} ===\n`;
+        context += formatMessages(dateMessages);
+        context += "\n\n";
+      }
+      if (dateSummaries.length > 0) {
+        context += `=== สรุปบทสนทนาช่วง ${dateRange.startDate} ถึง ${dateRange.endDate} ===\n`;
+        context += dateSummaries.map(s => {
+          const typeLabel = s.summary_type === "daily" ? "daily" : "weekly";
+          return `[${s.chat_title} | ${s.summary_date} (${typeLabel})]\n${s.summary_text}`;
+        }).join("\n\n");
+        context += "\n\n";
+      }
+    }
+  } catch (dateErr) {
+    console.error("Date range search failed (non-fatal):", dateErr.message);
   }
 
   return context;
