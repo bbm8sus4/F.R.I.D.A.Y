@@ -2873,11 +2873,13 @@ async function handleRecapCallback(env, callbackQuery) {
 ห้ามใส่ action tags ใดๆ`;
 
       const aiResponse = await askGemini(env, aiPrompt, contextBlock, null);
-      const cleanResponse = aiResponse
-        .replace(/\[SEND:[^\]]+\]/g, '')
-        .replace(/\[REMEMBER:\w+:[^\]]+\]/g, '')
-        .replace(/\[FORGET:\d+\]/g, '')
-        .trim();
+      const cleanResponse = stripHtmlTags(
+        aiResponse
+          .replace(/\[SEND:[^\]]+\]/g, '')
+          .replace(/\[REMEMBER:\w+:[^\]]+\]/g, '')
+          .replace(/\[FORGET:\d+\]/g, '')
+          .replace(/[•*\-]?\s*<a\s+href="https?:\/\/vertexaisearch\.cloud\.google\.com\/[^"]*">[^<]*<\/a>/g, '')
+      ).replace(/\n{3,}/g, '\n\n').trim();
 
       const recapText = `📋 Recap "${groupName}" (${days} วัน)\n\n${cleanResponse}`;
 
@@ -3029,11 +3031,13 @@ async function handleRecapReply(env, message, targetChatId, instruction) {
 ห้ามใส่ action tags ใดๆ`;
 
     const aiResponse = await askGemini(env, aiPrompt, contextBlock, null);
-    const cleanResponse = aiResponse
-      .replace(/\[SEND:[^\]]+\]/g, '')
-      .replace(/\[REMEMBER:\w+:[^\]]+\]/g, '')
-      .replace(/\[FORGET:\d+\]/g, '')
-      .trim();
+    const cleanResponse = stripHtmlTags(
+      aiResponse
+        .replace(/\[SEND:[^\]]+\]/g, '')
+        .replace(/\[REMEMBER:\w+:[^\]]+\]/g, '')
+        .replace(/\[FORGET:\d+\]/g, '')
+        .replace(/[•*\-]?\s*<a\s+href="https?:\/\/vertexaisearch\.cloud\.google\.com\/[^"]*">[^<]*<\/a>/g, '')
+    ).replace(/\n{3,}/g, '\n\n').trim();
 
     const header = dateRange
       ? `📋 Recap "${groupName}" (${dateRange.startDate} ถึง ${dateRange.endDate})`
