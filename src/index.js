@@ -3089,6 +3089,7 @@ async function handleMemoriesCommand(env, message) {
 async function handleSummaryCommand(env, message, args) {
   try {
     const chatId = message.chat.id;
+    const isDM = message.chat.type === "private";
     const parts = args.trim().split(/\s+/);
 
     if (parts[0] === "backfill") {
@@ -3173,13 +3174,19 @@ async function handleSummaryCommand(env, message, args) {
     if (parts[0] === "search" && parts.length > 1) {
       // /summary search <keyword>
       const keyword = parts.slice(1).join(" ");
-      const { results } = await env.DB.prepare(
-        `SELECT chat_title, COALESCE(summary_date, week_end) as summary_date,
-                COALESCE(summary_type, 'weekly') as summary_type, summary_text, message_count
-         FROM summaries
-         WHERE summary_text LIKE ?
-         ORDER BY COALESCE(summary_date, week_end) DESC LIMIT 10`
-      ).bind(`%${keyword}%`).all();
+      const searchQuery = isDM
+        ? `SELECT chat_title, COALESCE(summary_date, week_end) as summary_date,
+                  COALESCE(summary_type, 'weekly') as summary_type, summary_text, message_count
+           FROM summaries
+           WHERE summary_text LIKE ?
+           ORDER BY COALESCE(summary_date, week_end) DESC LIMIT 10`
+        : `SELECT chat_title, COALESCE(summary_date, week_end) as summary_date,
+                  COALESCE(summary_type, 'weekly') as summary_type, summary_text, message_count
+           FROM summaries
+           WHERE summary_text LIKE ? AND chat_id = ?
+           ORDER BY COALESCE(summary_date, week_end) DESC LIMIT 10`;
+      const searchBinds = isDM ? [`%${keyword}%`] : [`%${keyword}%`, chatId];
+      const { results } = await env.DB.prepare(searchQuery).bind(...searchBinds).all();
 
       if (results.length === 0) {
         await sendTelegram(env, chatId, `ไม่พบ summary ที่มีคำว่า "${keyword}" ค่ะนาย`, message.message_id);
@@ -3196,13 +3203,19 @@ async function handleSummaryCommand(env, message, args) {
     } else {
       // /summary หรือ /summary <N>
       const days = parseInt(parts[0]) || 7;
-      const { results } = await env.DB.prepare(
-        `SELECT chat_title, COALESCE(summary_date, week_end) as summary_date,
-                COALESCE(summary_type, 'weekly') as summary_type, summary_text, message_count
-         FROM summaries
-         WHERE COALESCE(summary_date, week_end) >= date('now', '-' || ? || ' days')
-         ORDER BY COALESCE(summary_date, week_end) DESC LIMIT 20`
-      ).bind(days).all();
+      const listQuery = isDM
+        ? `SELECT chat_title, COALESCE(summary_date, week_end) as summary_date,
+                  COALESCE(summary_type, 'weekly') as summary_type, summary_text, message_count
+           FROM summaries
+           WHERE COALESCE(summary_date, week_end) >= date('now', '-' || ? || ' days')
+           ORDER BY COALESCE(summary_date, week_end) DESC LIMIT 20`
+        : `SELECT chat_title, COALESCE(summary_date, week_end) as summary_date,
+                  COALESCE(summary_type, 'weekly') as summary_type, summary_text, message_count
+           FROM summaries
+           WHERE COALESCE(summary_date, week_end) >= date('now', '-' || ? || ' days') AND chat_id = ?
+           ORDER BY COALESCE(summary_date, week_end) DESC LIMIT 20`;
+      const listBinds = isDM ? [days] : [days, chatId];
+      const { results } = await env.DB.prepare(listQuery).bind(...listBinds).all();
 
       if (results.length === 0) {
         await sendTelegram(env, chatId, `ไม่มี summary ใน ${days} วันที่ผ่านมาค่ะนาย`, message.message_id);
