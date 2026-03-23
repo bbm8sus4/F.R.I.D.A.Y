@@ -4,6 +4,7 @@ const TABS = [
   { id: "dashboard", icon: "📊", label: "Dashboard" },
   { id: "commitments", icon: "📋", label: "Pending" },
   { id: "alerts", icon: "🔔", label: "Alerts" },
+  { id: "summaries", icon: "📝", label: "Summaries" },
 ];
 
 export default function Layout({ tab, onTabChange, children }) {

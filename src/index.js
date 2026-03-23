@@ -268,6 +268,44 @@ async function handleApiRequest(request, url, env) {
       }), { headers });
     }
 
+    // GET /api/summaries — list with filters
+    if (path === "/summaries" && method === "GET") {
+      try {
+        const chatId = url.searchParams.get("chat_id");
+        const search = url.searchParams.get("search");
+        const dateFrom = url.searchParams.get("date_from");
+        const dateTo = url.searchParams.get("date_to");
+        const summaryType = url.searchParams.get("type");
+        const page = Math.max(1, Number(url.searchParams.get("page")) || 1);
+        const limit = Math.min(50, Math.max(1, Number(url.searchParams.get("limit")) || 20));
+        const offset = (page - 1) * limit;
+
+        let where = "WHERE 1=1";
+        const params = [];
+        if (chatId) { where += ` AND chat_id = ?`; params.push(Number(chatId)); }
+        if (search) { where += ` AND summary_text LIKE ?`; params.push(`%${search}%`); }
+        if (dateFrom) { where += ` AND COALESCE(summary_date, week_end) >= ?`; params.push(dateFrom); }
+        if (dateTo) { where += ` AND COALESCE(summary_date, week_end) <= ?`; params.push(dateTo); }
+        if (summaryType) { where += ` AND COALESCE(summary_type, 'weekly') = ?`; params.push(summaryType); }
+
+        const countResult = await env.DB.prepare(`SELECT COUNT(*) as total FROM summaries ${where}`).bind(...params).first();
+        const { results } = await env.DB.prepare(
+          `SELECT id, chat_id, chat_title, week_start, week_end, summary_text, message_count,
+                  COALESCE(summary_type, 'weekly') as summary_type,
+                  COALESCE(summary_date, week_end) as summary_date,
+                  datetime(created_at, '+7 hours') as created_at
+           FROM summaries ${where}
+           ORDER BY COALESCE(summary_date, week_end) DESC LIMIT ? OFFSET ?`
+        ).bind(...params, limit, offset).all();
+
+        return new Response(JSON.stringify({
+          data: results, total: countResult.total, page, limit,
+        }), { headers });
+      } catch {
+        return new Response(JSON.stringify({ data: [], total: 0, page: 1, limit: 20 }), { headers });
+      }
+    }
+
     // GET /api/groups — group registry
     if (path === "/groups" && method === "GET") {
       try {
@@ -513,6 +551,7 @@ export default {
           "/readhtml": () => handleReadhtmlCommand(env, message, parsed.args),
           "/readpdf": () => handleReadpdfCommand(env, message, parsed.args),
           "/readimg": () => handleReadimgCommand(env, message, parsed.args),
+          "/summary": () => handleSummaryCommand(env, message, parsed.args),
           "/delete": () => handleDeleteCommand(env, message),
           "/dashboard": () => handleDashboardCommand(env, message),
           "/menu": () => sendReplyKeyboard(env, message.chat.id),
@@ -867,12 +906,15 @@ async function getSmartContext(db, chatId, isDM, userQuery) {
         ).bind(...likeParams)
       );
 
-      // summaries ที่เกี่ยว (สูงสุด 5 อัน)
+      // summaries ที่เกี่ยว (สูงสุด 8 อัน)
       batch2Stmts.push(
         db.prepare(
-          `SELECT chat_title, week_start, week_end, summary_text FROM summaries
+          `SELECT chat_title, week_start, week_end, summary_text,
+                  COALESCE(summary_date, week_end) as summary_date,
+                  COALESCE(summary_type, 'weekly') as summary_type
+           FROM summaries
            WHERE (${sumLikeConditions})
-           ORDER BY week_end DESC LIMIT 5`
+           ORDER BY COALESCE(summary_date, week_end) DESC LIMIT 8`
         ).bind(...likeParams)
       );
 
@@ -897,7 +939,10 @@ async function getSmartContext(db, chatId, isDM, userQuery) {
       if (relatedSummaries.length > 0) {
         context += "=== สรุปบทสนทนาย้อนหลัง ===\n";
         context += relatedSummaries
-          .map((s) => `[${s.chat_title} | ${s.week_start} ~ ${s.week_end}]\n${s.summary_text}`)
+          .map((s) => {
+            const typeLabel = s.summary_type === "daily" ? "daily" : "weekly";
+            return `[${s.chat_title} | ${s.summary_date} (${typeLabel})]\n${s.summary_text}`;
+          })
           .join("\n\n");
         context += "\n\n";
       }
@@ -3041,6 +3086,144 @@ async function handleMemoriesCommand(env, message) {
   }
 }
 
+async function handleSummaryCommand(env, message, args) {
+  try {
+    const chatId = message.chat.id;
+    const parts = args.trim().split(/\s+/);
+
+    if (parts[0] === "backfill") {
+      // /summary backfill — generate daily summaries for all missing dates (default last 7 days)
+      // /summary backfill 2026-03-18 — from specific date
+      const fromDate = parts[1] || null;
+      const daysBack = fromDate ? null : 7;
+
+      await sendTelegram(env, chatId, "⏳ กำลัง backfill daily summaries... รอสักครู่ค่ะนาย", message.message_id);
+
+      // Find all group × date combos with messages but no daily summary
+      let query, bindParams;
+      if (fromDate) {
+        query = `SELECT DISTINCT chat_id, chat_title, date(created_at, '+7 hours') as msg_date
+                 FROM messages
+                 WHERE chat_title IS NOT NULL AND date(created_at, '+7 hours') >= ?
+                   AND date(created_at, '+7 hours') < date('now', '+7 hours')
+                 ORDER BY msg_date ASC`;
+        bindParams = [fromDate];
+      } else {
+        query = `SELECT DISTINCT chat_id, chat_title, date(created_at, '+7 hours') as msg_date
+                 FROM messages
+                 WHERE chat_title IS NOT NULL AND created_at >= datetime('now', '-' || ? || ' days')
+                   AND date(created_at, '+7 hours') < date('now', '+7 hours')
+                 ORDER BY msg_date ASC`;
+        bindParams = [daysBack];
+      }
+
+      const { results: combos } = await env.DB.prepare(query).bind(...bindParams).all();
+
+      let created = 0, skipped = 0, failed = 0;
+      const processed = [];
+
+      for (const combo of combos) {
+        // Check if daily summary already exists
+        const existing = await env.DB.prepare(
+          `SELECT id FROM summaries WHERE chat_id = ? AND summary_type = 'daily' AND summary_date = ?`
+        ).bind(combo.chat_id, combo.msg_date).first();
+
+        if (existing) { skipped++; continue; }
+
+        // Get messages for this group × date
+        const { results: dayMessages } = await env.DB.prepare(
+          `SELECT username, first_name, message_text, datetime(created_at, '+7 hours') as created_at
+           FROM messages WHERE chat_id = ? AND date(created_at, '+7 hours') = ?
+           ORDER BY created_at ASC LIMIT 500`
+        ).bind(combo.chat_id, combo.msg_date).all();
+
+        if (dayMessages.length === 0) { skipped++; continue; }
+
+        const conversationText = dayMessages
+          .map(m => {
+            const name = m.username ? `@${m.username}` : m.first_name || "Unknown";
+            return `[${m.created_at}] ${name}: ${m.message_text}`;
+          })
+          .join("\n");
+
+        const summary = await generateDailySummary(env, combo.chat_title || "Unknown", conversationText, combo.msg_date);
+
+        if (summary) {
+          await env.DB.prepare(
+            `INSERT INTO summaries (chat_id, chat_title, week_start, week_end, summary_text, message_count, summary_type, summary_date)
+             VALUES (?, ?, ?, ?, ?, ?, 'daily', ?)`
+          ).bind(combo.chat_id, combo.chat_title, combo.msg_date, combo.msg_date, summary, dayMessages.length, combo.msg_date).run();
+          created++;
+          processed.push(`📅 ${combo.msg_date} | ${combo.chat_title} (${dayMessages.length} msg)`);
+        } else {
+          failed++;
+        }
+      }
+
+      let reply = `✅ Backfill เสร็จแล้วค่ะนาย\n\n`;
+      reply += `สร้างใหม่: ${created} | ข้าม (มีแล้ว): ${skipped} | ล้มเหลว: ${failed}\n\n`;
+      if (processed.length > 0) {
+        reply += processed.join("\n") + "\n\n";
+      }
+      reply += `ใช้ /summary ดูผลได้เลยค่ะ`;
+      await sendTelegram(env, chatId, reply.trim(), message.message_id);
+      return;
+    }
+
+    if (parts[0] === "search" && parts.length > 1) {
+      // /summary search <keyword>
+      const keyword = parts.slice(1).join(" ");
+      const { results } = await env.DB.prepare(
+        `SELECT chat_title, COALESCE(summary_date, week_end) as summary_date,
+                COALESCE(summary_type, 'weekly') as summary_type, summary_text, message_count
+         FROM summaries
+         WHERE summary_text LIKE ?
+         ORDER BY COALESCE(summary_date, week_end) DESC LIMIT 10`
+      ).bind(`%${keyword}%`).all();
+
+      if (results.length === 0) {
+        await sendTelegram(env, chatId, `ไม่พบ summary ที่มีคำว่า "${keyword}" ค่ะนาย`, message.message_id);
+        return;
+      }
+
+      let reply = `🔍 ค้นหา summary: "${keyword}" (${results.length} รายการ)\n\n`;
+      for (const s of results) {
+        const typeLabel = s.summary_type === "daily" ? "📅" : "📆";
+        reply += `${typeLabel} ${s.summary_date} | ${s.chat_title} (${s.message_count} msg)\n`;
+        reply += s.summary_text.substring(0, 300) + (s.summary_text.length > 300 ? "..." : "") + "\n\n";
+      }
+      await sendTelegram(env, chatId, reply.trim(), message.message_id);
+    } else {
+      // /summary หรือ /summary <N>
+      const days = parseInt(parts[0]) || 7;
+      const { results } = await env.DB.prepare(
+        `SELECT chat_title, COALESCE(summary_date, week_end) as summary_date,
+                COALESCE(summary_type, 'weekly') as summary_type, summary_text, message_count
+         FROM summaries
+         WHERE COALESCE(summary_date, week_end) >= date('now', '-' || ? || ' days')
+         ORDER BY COALESCE(summary_date, week_end) DESC LIMIT 20`
+      ).bind(days).all();
+
+      if (results.length === 0) {
+        await sendTelegram(env, chatId, `ไม่มี summary ใน ${days} วันที่ผ่านมาค่ะนาย`, message.message_id);
+        return;
+      }
+
+      let reply = `📋 Summaries (${days} วันล่าสุด): ${results.length} รายการ\n\n`;
+      for (const s of results) {
+        const typeLabel = s.summary_type === "daily" ? "📅" : "📆";
+        reply += `${typeLabel} ${s.summary_date} | ${s.chat_title} (${s.message_count} msg)\n`;
+        reply += s.summary_text.substring(0, 300) + (s.summary_text.length > 300 ? "..." : "") + "\n\n";
+      }
+      reply += "💡 /summary <N> ดูย้อนหลัง N วัน\n/summary search <คำ> ค้นหา\n/summary backfill สร้าง summary ย้อนหลัง";
+      await sendTelegram(env, chatId, reply.trim(), message.message_id);
+    }
+  } catch (err) {
+    console.error("handleSummaryCommand error:", err);
+    await sendTelegram(env, message.chat.id, "เกิดข้อผิดพลาดค่ะนาย ลองใหม่อีกครั้ง", message.message_id);
+  }
+}
+
 async function handleCooldownCommand(env, message, args) {
   try {
     const id = args.trim();
@@ -3699,6 +3882,46 @@ async function proactiveInsightAlert(env) {
 
 // ===== Summarize & Cleanup (Cron ทุก 3 ชม.) =====
 
+async function generateDailySummary(env, groupTitle, conversationText, dateStr) {
+  const prompt = `สรุปบทสนทนาของกลุ่ม "${groupTitle}" วันที่ ${dateStr} อย่างละเอียด เน้น:
+1. หัวข้อหลักที่คุยกัน — แต่ละหัวข้อสรุปประเด็นสำคัญ
+2. การตัดสินใจสำคัญ — ใครตัดสินใจอะไร เหตุผล
+3. งานที่มอบหมาย — ใคร ทำอะไร เมื่อไหร่ สถานะ
+4. ตัวเลข/จำนวนเงินสำคัญ — ยอด ราคา จำนวน
+5. ปัญหาหรือข้อกังวลที่ยังค้าง — อะไรยังไม่ได้แก้
+6. ข้อมูลสำคัญอื่นๆ — ชื่อคน สถานที่ ลิงก์ รหัสอ้างอิง ที่อาจต้องใช้ภายหลัง
+
+ถ้าไม่มีเรื่องสำคัญเลย ให้สรุปสั้นๆ 2-3 ประโยคว่าคุยเรื่องอะไร
+ตอบเป็นภาษาไทย ละเอียดแต่กระชับ ไม่เกิน 1500 คำ`;
+
+  const model = "gemini-2.5-flash";
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${env.GEMINI_API_KEY}`;
+
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      system_instruction: { parts: [{ text: prompt }] },
+      contents: [{ role: "user", parts: [{ text: conversationText }] }],
+      generationConfig: { maxOutputTokens: 4096 },
+    }),
+  });
+
+  if (!response.ok) {
+    console.error("Daily summary Gemini error:", response.status);
+    return null;
+  }
+
+  const data = await response.json();
+  const parts = data.candidates?.[0]?.content?.parts;
+  if (!parts) return null;
+
+  for (let i = parts.length - 1; i >= 0; i--) {
+    if (parts[i].text && !parts[i].thought) return parts[i].text;
+  }
+  return parts.find(p => p.text)?.text || null;
+}
+
 async function generateSummary(env, groupTitle, conversationText) {
   const prompt = `สรุปบทสนทนาของกลุ่ม "${groupTitle}" ให้กระชับที่สุด เน้น:
 1. หัวข้อหลักที่คุยกัน
@@ -3743,12 +3966,68 @@ async function summarizeAndCleanup(env) {
     const bossId = env.BOSS_USER_ID;
     let totalDeletedMessages = 0;
     let totalSummaries = 0;
+    let totalDailySummaries = 0;
 
-    // 1. หากลุ่มที่มีข้อความเก่ากว่า 7 วัน (LIMIT 10 กลุ่มต่อ cron run)
+    // === Daily summaries: สร้าง daily summary สำหรับข้อความเก่ากว่า 24 ชม. ===
+    const { results: dailyGroups } = await env.DB
+      .prepare(
+        `SELECT DISTINCT chat_id, chat_title, date(created_at, '+7 hours') as msg_date
+         FROM messages
+         WHERE created_at < datetime('now', '-24 hours') AND chat_title IS NOT NULL
+         AND date(created_at, '+7 hours') NOT IN (
+           SELECT summary_date FROM summaries WHERE chat_id = messages.chat_id AND summary_type = 'daily' AND summary_date IS NOT NULL
+         )
+         LIMIT 15`
+      )
+      .all();
+
+    for (const dg of dailyGroups) {
+      // เช็คซ้ำอีกครั้ง (idempotency)
+      const dup = await env.DB.prepare(
+        `SELECT id FROM summaries WHERE chat_id = ? AND summary_type = 'daily' AND summary_date = ?`
+      ).bind(dg.chat_id, dg.msg_date).first();
+      if (dup) continue;
+
+      const { results: dayMessages } = await env.DB
+        .prepare(
+          `SELECT username, first_name, message_text, datetime(created_at, '+7 hours') as created_at
+           FROM messages
+           WHERE chat_id = ? AND date(created_at, '+7 hours') = ?
+           ORDER BY created_at ASC LIMIT 500`
+        )
+        .bind(dg.chat_id, dg.msg_date)
+        .all();
+
+      if (dayMessages.length === 0) continue;
+
+      const conversationText = dayMessages
+        .map(m => {
+          const name = m.username ? `@${m.username}` : m.first_name || "Unknown";
+          return `[${m.created_at}] ${name}: ${m.message_text}`;
+        })
+        .join("\n");
+
+      const summary = await generateDailySummary(env, dg.chat_title || "Unknown", conversationText, dg.msg_date);
+
+      if (summary) {
+        await env.DB
+          .prepare(
+            `INSERT INTO summaries (chat_id, chat_title, week_start, week_end, summary_text, message_count, summary_type, summary_date)
+             VALUES (?, ?, ?, ?, ?, ?, 'daily', ?)`
+          )
+          .bind(dg.chat_id, dg.chat_title, dg.msg_date, dg.msg_date, summary, dayMessages.length, dg.msg_date)
+          .run();
+        totalDailySummaries++;
+      }
+    }
+
+    // === Weekly summaries + message cleanup (เก่ากว่า 30 วัน) ===
+
+    // 1. หากลุ่มที่มีข้อความเก่ากว่า 30 วัน (LIMIT 10 กลุ่มต่อ cron run)
     const { results: groups } = await env.DB
       .prepare(
         `SELECT DISTINCT chat_id, chat_title FROM messages
-         WHERE created_at < datetime('now', '-7 days') AND chat_title IS NOT NULL
+         WHERE created_at < datetime('now', '-30 days') AND chat_title IS NOT NULL
          LIMIT 10`
       )
       .all();
@@ -3759,7 +4038,7 @@ async function summarizeAndCleanup(env) {
         .prepare(
           `SELECT username, first_name, message_text, datetime(created_at, '+7 hours') as created_at
            FROM messages
-           WHERE chat_id = ? AND created_at < datetime('now', '-7 days')
+           WHERE chat_id = ? AND created_at < datetime('now', '-30 days')
            ORDER BY created_at ASC LIMIT 500`
         )
         .bind(group.chat_id)
@@ -3796,10 +4075,10 @@ async function summarizeAndCleanup(env) {
         if (summary) {
           await env.DB
             .prepare(
-              `INSERT INTO summaries (chat_id, chat_title, week_start, week_end, summary_text, message_count)
-               VALUES (?, ?, ?, ?, ?, ?)`
+              `INSERT INTO summaries (chat_id, chat_title, week_start, week_end, summary_text, message_count, summary_type, summary_date)
+               VALUES (?, ?, ?, ?, ?, ?, 'weekly', ?)`
             )
-            .bind(group.chat_id, group.chat_title, weekStart, weekEnd, summary, oldMessages.length)
+            .bind(group.chat_id, group.chat_title, weekStart, weekEnd, summary, oldMessages.length, weekEnd)
             .run();
           totalSummaries++;
         }
@@ -3810,7 +4089,7 @@ async function summarizeAndCleanup(env) {
         const result = await env.DB
           .prepare(
             `DELETE FROM messages WHERE id IN (
-               SELECT id FROM messages WHERE chat_id = ? AND created_at < datetime('now', '-7 days') LIMIT 500
+               SELECT id FROM messages WHERE chat_id = ? AND created_at < datetime('now', '-30 days') LIMIT 500
              )`
           )
           .bind(group.chat_id)
@@ -3858,9 +4137,14 @@ async function summarizeAndCleanup(env) {
       `DELETE FROM bot_messages WHERE created_at < datetime('now', '-48 hours')`
     ).run();
 
-    if (totalDeletedMessages > 0 || totalSummaries > 0 || commitResult.meta.changes > 0) {
+    // ลบ summaries เก่ากว่า 365 วัน
+    await env.DB.prepare(
+      `DELETE FROM summaries WHERE created_at < datetime('now', '-365 days')`
+    ).run();
+
+    if (totalDeletedMessages > 0 || totalSummaries > 0 || totalDailySummaries > 0 || commitResult.meta.changes > 0) {
       console.log(
-        `Cleanup done: ${totalDeletedMessages} messages deleted, ${totalSummaries} summaries created, ${commitResult.meta.changes} resolved commitments deleted`
+        `Cleanup done: ${totalDeletedMessages} msgs deleted, ${totalSummaries} weekly + ${totalDailySummaries} daily summaries, ${commitResult.meta.changes} commitments deleted`
       );
     }
   } catch (err) {

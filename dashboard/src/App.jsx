@@ -3,6 +3,7 @@ import Layout from "./components/Layout";
 import Dashboard from "./pages/Dashboard";
 import Commitments from "./pages/Commitments";
 import Alerts from "./pages/Alerts";
+import Summaries from "./pages/Summaries";
 
 export default function App() {
   const [tab, setTab] = useState("dashboard");
@@ -12,6 +13,7 @@ export default function App() {
       {tab === "dashboard" && <Dashboard onNavigate={setTab} />}
       {tab === "commitments" && <Commitments />}
       {tab === "alerts" && <Alerts />}
+      {tab === "summaries" && <Summaries />}
     </Layout>
   );
 }
