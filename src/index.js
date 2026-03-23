@@ -377,6 +377,10 @@ export default {
           ctx.waitUntil(handleProactiveAlertCallback(env, callbackQuery));
           return new Response("OK", { status: 200 });
         }
+        if (callbackQuery.data?.startsWith("recap:")) {
+          ctx.waitUntil(handleRecapCallback(env, callbackQuery));
+          return new Response("OK", { status: 200 });
+        }
       }
 
       const message = update.message || update.edited_message;
@@ -526,6 +530,7 @@ export default {
           "🧠 Memories": "/memories",
           "🗑 Delete": "/delete",
           "📨 Send": "/send",
+          "📋 Recap": "/recap",
         };
         if (shortcutMap[text]) text = shortcutMap[text];
       }
@@ -552,6 +557,7 @@ export default {
           "/readpdf": () => handleReadpdfCommand(env, message, parsed.args),
           "/readimg": () => handleReadimgCommand(env, message, parsed.args),
           "/summary": () => handleSummaryCommand(env, message, parsed.args),
+          "/recap": () => handleRecapCommand(env, message),
           "/delete": () => handleDeleteCommand(env, message),
           "/dashboard": () => handleDashboardCommand(env, message),
           "/menu": () => sendReplyKeyboard(env, message.chat.id),
@@ -600,6 +606,20 @@ export default {
             if (pending) {
               await env.DB.prepare(`DELETE FROM pending_sends WHERE user_id = ?`).bind(message.chat.id).run();
               ctx.waitUntil(handleSendReply(env, message, pending.target_chat_id, text));
+              return new Response("OK", { status: 200 });
+            }
+          } catch (e) { /* table might not exist yet */ }
+        }
+
+        // Handle recap reply — lookup target from pending_recaps
+        if (message.reply_to_message.text.startsWith('📋 พิมพ์คำสั่ง')) {
+          try {
+            const pending = await env.DB.prepare(
+              `SELECT target_chat_id FROM pending_recaps WHERE user_id = ?`
+            ).bind(message.chat.id).first();
+            if (pending) {
+              await env.DB.prepare(`DELETE FROM pending_recaps WHERE user_id = ?`).bind(message.chat.id).run();
+              ctx.waitUntil(handleRecapReply(env, message, pending.target_chat_id, text));
               return new Response("OK", { status: 200 });
             }
           } catch (e) { /* table might not exist yet */ }
@@ -1671,7 +1691,8 @@ async function sendReplyKeyboard(env, chatId) {
       reply_markup: {
         keyboard: [
           [{ text: "📋 Pending" }, { text: "🧠 Memories" }],
-          [{ text: "📨 Send" }, { text: "🗑 Delete" }],
+          [{ text: "📨 Send" }, { text: "📋 Recap" }],
+          [{ text: "🗑 Delete" }],
           [{ text: "📊 Dashboard", web_app: { url: env.DASHBOARD_URL || "https://friday-dashboard-3rf.pages.dev" } }],
         ],
         resize_keyboard: true,
@@ -2542,7 +2563,8 @@ async function handleSendCallback(env, callbackQuery) {
   const REPLY_KB = {
     keyboard: [
       [{ text: "📋 Pending" }, { text: "🧠 Memories" }],
-      [{ text: "📨 Send" }, { text: "🗑 Delete" }],
+      [{ text: "📨 Send" }, { text: "📋 Recap" }],
+      [{ text: "🗑 Delete" }],
     ],
     resize_keyboard: true,
     is_persistent: true,
@@ -2697,6 +2719,331 @@ async function handleSendReply(env, message, targetChatId, msgText) {
     await sendTelegramWithKeyboard(env, message.chat.id, previewText, message.message_id, buttons);
   } catch (err) {
     await sendTelegram(env, message.chat.id, "ส่งไม่สำเร็จ: " + err.message, message.message_id);
+  }
+}
+
+// ===== /recap — สรุปบทสนทนาจากกลุ่ม =====
+
+async function handleRecapCommand(env, message) {
+  try {
+    if (message.chat.type !== "private") {
+      await sendTelegram(env, message.chat.id, "คำสั่ง /recap ใช้ได้เฉพาะใน DM เท่านั้นค่ะนาย", message.message_id);
+      return;
+    }
+
+    const { results } = await env.DB.prepare(
+      `SELECT chat_id, chat_title FROM group_registry
+       WHERE is_active = 1 ORDER BY last_message_at DESC LIMIT 10`
+    ).all();
+
+    if (!results.length) {
+      await sendTelegram(env, message.chat.id, "ไม่พบกลุ่มที่ active อยู่ค่ะนาย", message.message_id);
+      return;
+    }
+
+    const buttons = results.map(r => [{
+      text: r.chat_title || `Group ${r.chat_id}`,
+      callback_data: `recap:g:${r.chat_id}`
+    }]);
+
+    await sendTelegramWithKeyboard(env, message.chat.id,
+      "📋 เลือกกลุ่มที่ต้องการ Recap ค่ะนาย:", message.message_id, buttons);
+  } catch (err) {
+    console.error("handleRecapCommand error:", err);
+    await sendTelegram(env, message.chat.id, "เกิดข้อผิดพลาด: " + err.message, message.message_id);
+  }
+}
+
+async function handleRecapCallback(env, callbackQuery) {
+  const parts = callbackQuery.data.split(":");
+  const action = parts[1];
+  const chatId = callbackQuery.message.chat.id;
+  const messageId = callbackQuery.message.message_id;
+
+  const answerCallback = () => fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/answerCallbackQuery`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ callback_query_id: callbackQuery.id }),
+  });
+
+  if (action === "g") {
+    try {
+    // Group selected → show time range options
+    const targetChatId = parts.slice(2).join(":");
+    const row = await env.DB.prepare(
+      `SELECT chat_title FROM group_registry WHERE chat_id = ?`
+    ).bind(targetChatId).first();
+    const groupName = row?.chat_title || `Group ${targetChatId}`;
+
+    const buttons = [
+      [
+        { text: "📅 วันนี้", callback_data: `recap:d:${targetChatId}:1` },
+        { text: "📅 3 วัน", callback_data: `recap:d:${targetChatId}:3` },
+      ],
+      [
+        { text: "📅 7 วัน", callback_data: `recap:d:${targetChatId}:7` },
+        { text: "✏️ กำหนดเอง", callback_data: `recap:c:${targetChatId}` },
+      ],
+    ];
+
+    await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/editMessageText`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chat_id: chatId,
+        message_id: messageId,
+        text: `📋 Recap "${groupName}" — เลือกช่วงเวลาค่ะนาย:`,
+        reply_markup: { inline_keyboard: buttons },
+      }),
+    });
+
+    await answerCallback();
+    } catch (err) {
+      console.error("handleRecapCallback g error:", err);
+      await answerCallback();
+    }
+    return;
+  }
+
+  if (action === "d") {
+    // Quick days selected → fetch messages + summarize
+    const days = Math.min(Math.max(Number(parts[parts.length - 1]) || 7, 1), 30);
+    const targetChatId = parts.slice(2, -1).join(":");
+    const row = await env.DB.prepare(
+      `SELECT chat_title FROM group_registry WHERE chat_id = ?`
+    ).bind(targetChatId).first();
+    const groupName = row?.chat_title || `Group ${targetChatId}`;
+
+    // Precompute date cutoff in JS to avoid SQL interpolation
+    const cutoffDate = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+    const cutoffDateOnly = cutoffDate.slice(0, 10);
+
+    // Show loading state
+    await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/editMessageText`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chat_id: chatId,
+        message_id: messageId,
+        text: `⏳ กำลังสรุป "${groupName}" ย้อนหลัง ${days} วัน...`,
+        reply_markup: { inline_keyboard: [] },
+      }),
+    });
+
+    await answerCallback();
+
+    try {
+      // Fetch messages
+      const { results: messages } = await env.DB.prepare(
+        `SELECT message_text, first_name, username, chat_title, created_at
+         FROM messages WHERE chat_id = ? AND created_at > ?
+         ORDER BY created_at ASC LIMIT 500`
+      ).bind(targetChatId, cutoffDate).all();
+
+      // Fetch summaries
+      const { results: summaries } = await env.DB.prepare(
+        `SELECT summary_text, summary_date FROM summaries
+         WHERE chat_id = ? AND summary_date >= ?
+         ORDER BY summary_date ASC`
+      ).bind(targetChatId, cutoffDateOnly).all();
+
+      if (!messages.length && !summaries.length) {
+        await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/editMessageText`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            chat_id: chatId,
+            message_id: messageId,
+            text: `📋 ไม่พบข้อมูลของ "${groupName}" ในช่วง ${days} วันที่ผ่านมาค่ะนาย`,
+          }),
+        });
+        return;
+      }
+
+      const formattedMsgs = formatMessages(messages);
+      const summaryTexts = summaries.map(s => `[สรุปวันที่ ${s.summary_date}]\n${s.summary_text}`).join("\n\n");
+
+      const contextBlock = [
+        summaryTexts ? `=== สรุปรายวัน ===\n${summaryTexts}` : "",
+        formattedMsgs ? `=== ข้อความล่าสุด ===\n${formattedMsgs}` : "",
+      ].filter(Boolean).join("\n\n");
+
+      const aiPrompt = `สรุปบทสนทนาของกลุ่ม "${groupName}" ในช่วง ${days} วันที่ผ่านมาให้บอส
+ให้สรุปเป็นภาษาไทย กระชับ ครอบคลุมประเด็นสำคัญ แบ่งหัวข้อชัดเจน
+ถ้ามีเรื่องสำคัญที่ต้องติดตามให้ระบุด้วย
+ห้ามใส่ action tags ใดๆ`;
+
+      const aiResponse = await askGemini(env, aiPrompt, contextBlock, null);
+      const cleanResponse = aiResponse
+        .replace(/\[SEND:[^\]]+\]/g, '')
+        .replace(/\[REMEMBER:\w+:[^\]]+\]/g, '')
+        .replace(/\[FORGET:\d+\]/g, '')
+        .trim();
+
+      const recapText = `📋 Recap "${groupName}" (${days} วัน)\n\n${cleanResponse}`;
+
+      // If too long for edit, send as new message
+      if (recapText.length > 4000) {
+        await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/editMessageText`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            chat_id: chatId,
+            message_id: messageId,
+            text: `📋 Recap "${groupName}" (${days} วัน) — ส่งผลลัพธ์ด้านล่างค่ะ`,
+          }),
+        });
+        await sendTelegram(env, chatId, cleanResponse, null);
+      } else {
+        await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/editMessageText`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            chat_id: chatId,
+            message_id: messageId,
+            text: recapText,
+          }),
+        });
+      }
+    } catch (err) {
+      console.error("handleRecapCallback d error:", err);
+      await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/editMessageText`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          chat_id: chatId,
+          message_id: messageId,
+          text: `❌ เกิดข้อผิดพลาด: ${err.message}`,
+        }),
+      });
+    }
+    return;
+  }
+
+  if (action === "c") {
+    try {
+    // Custom mode → force reply
+    const targetChatId = parts.slice(2).join(":");
+    const row = await env.DB.prepare(
+      `SELECT chat_title FROM group_registry WHERE chat_id = ?`
+    ).bind(targetChatId).first();
+    const groupName = row?.chat_title || `Group ${targetChatId}`;
+
+    // Store target in DB
+    await env.DB.prepare(
+      `CREATE TABLE IF NOT EXISTS pending_recaps (user_id INTEGER PRIMARY KEY, target_chat_id TEXT, created_at TEXT DEFAULT (datetime('now')))`
+    ).run();
+    await env.DB.prepare(
+      `INSERT OR REPLACE INTO pending_recaps (user_id, target_chat_id) VALUES (?, ?)`
+    ).bind(chatId, targetChatId).run();
+
+    // Remove inline buttons from original message
+    await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/editMessageReplyMarkup`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chat_id: chatId,
+        message_id: messageId,
+        reply_markup: { inline_keyboard: [] },
+      }),
+    });
+
+    // Send force reply
+    await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chat_id: chatId,
+        text: `📋 พิมพ์คำสั่ง recap สำหรับ "${groupName}" (reply ข้อความนี้ค่ะนาย)\nเช่น: "สรุปเรื่องงบประมาณ" หรือ "18-23 มีนาคม"`,
+        reply_markup: { force_reply: true, selective: true },
+      }),
+    });
+
+    await answerCallback();
+    } catch (err) {
+      console.error("handleRecapCallback c error:", err);
+      await answerCallback();
+    }
+    return;
+  }
+}
+
+async function handleRecapReply(env, message, targetChatId, instruction) {
+  try {
+    await sendTyping(env, message.chat.id);
+
+    const row = await env.DB.prepare(
+      `SELECT chat_title FROM group_registry WHERE chat_id = ?`
+    ).bind(targetChatId).first();
+    const groupName = row?.chat_title || `Group ${targetChatId}`;
+
+    // Try to parse date range from instruction
+    const dateRange = parseDateRange(instruction);
+
+    // Fetch messages
+    const msgQuery = dateRange
+      ? `SELECT message_text, first_name, username, chat_title, created_at
+         FROM messages WHERE chat_id = ? AND date(created_at) >= ? AND date(created_at) <= ?
+         ORDER BY created_at ASC LIMIT 500`
+      : `SELECT message_text, first_name, username, chat_title, created_at
+         FROM messages WHERE chat_id = ? AND created_at > datetime('now', '-7 days')
+         ORDER BY created_at ASC LIMIT 500`;
+
+    const msgParams = dateRange
+      ? [targetChatId, dateRange.startDate, dateRange.endDate]
+      : [targetChatId];
+
+    const { results: messages } = await env.DB.prepare(msgQuery).bind(...msgParams).all();
+
+    // Fetch summaries
+    const sumQuery = dateRange
+      ? `SELECT summary_text, summary_date FROM summaries
+         WHERE chat_id = ? AND summary_date >= ? AND summary_date <= ?
+         ORDER BY summary_date ASC`
+      : `SELECT summary_text, summary_date FROM summaries
+         WHERE chat_id = ? AND summary_date >= date('now', '-7 days')
+         ORDER BY summary_date ASC`;
+
+    const sumParams = dateRange
+      ? [targetChatId, dateRange.startDate, dateRange.endDate]
+      : [targetChatId];
+
+    const { results: summaries } = await env.DB.prepare(sumQuery).bind(...sumParams).all();
+
+    if (!messages.length && !summaries.length) {
+      await sendTelegram(env, message.chat.id, `📋 ไม่พบข้อมูลของ "${groupName}" ในช่วงเวลาที่ระบุค่ะนาย`, message.message_id);
+      return;
+    }
+
+    const formattedMsgs = formatMessages(messages);
+    const summaryTexts = summaries.map(s => `[สรุปวันที่ ${s.summary_date}]\n${s.summary_text}`).join("\n\n");
+
+    const contextBlock = [
+      summaryTexts ? `=== สรุปรายวัน ===\n${summaryTexts}` : "",
+      formattedMsgs ? `=== ข้อความล่าสุด ===\n${formattedMsgs}` : "",
+    ].filter(Boolean).join("\n\n");
+
+    const aiPrompt = `สรุปบทสนทนาของกลุ่ม "${groupName}" ให้บอส
+คำสั่งจากบอส: ${instruction}
+ให้สรุปเป็นภาษาไทย กระชับ ครอบคลุมประเด็นสำคัญ แบ่งหัวข้อชัดเจน
+ถ้ามีเรื่องสำคัญที่ต้องติดตามให้ระบุด้วย
+ห้ามใส่ action tags ใดๆ`;
+
+    const aiResponse = await askGemini(env, aiPrompt, contextBlock, null);
+    const cleanResponse = aiResponse
+      .replace(/\[SEND:[^\]]+\]/g, '')
+      .replace(/\[REMEMBER:\w+:[^\]]+\]/g, '')
+      .replace(/\[FORGET:\d+\]/g, '')
+      .trim();
+
+    const header = dateRange
+      ? `📋 Recap "${groupName}" (${dateRange.startDate} ถึง ${dateRange.endDate})`
+      : `📋 Recap "${groupName}" (7 วัน)`;
+
+    await sendTelegram(env, message.chat.id, `${header}\n\n${cleanResponse}`, message.message_id);
+  } catch (err) {
+    console.error("handleRecapReply error:", err);
+    await sendTelegram(env, message.chat.id, "❌ เกิดข้อผิดพลาด: " + err.message, message.message_id);
   }
 }
 
