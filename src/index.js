@@ -1692,8 +1692,7 @@ async function sendReplyKeyboard(env, chatId) {
         keyboard: [
           [{ text: "📋 Pending" }, { text: "🧠 Memories" }],
           [{ text: "📨 Send" }, { text: "📋 Recap" }],
-          [{ text: "🗑 Delete" }],
-          [{ text: "📊 Dashboard", web_app: { url: env.DASHBOARD_URL || "https://friday-dashboard-3rf.pages.dev" } }],
+          [{ text: "🗑 Delete" }, { text: "📊 Dashboard", web_app: { url: env.DASHBOARD_URL || "https://friday-dashboard-3rf.pages.dev" } }],
         ],
         resize_keyboard: true,
         is_persistent: true,
@@ -2564,7 +2563,7 @@ async function handleSendCallback(env, callbackQuery) {
     keyboard: [
       [{ text: "📋 Pending" }, { text: "🧠 Memories" }],
       [{ text: "📨 Send" }, { text: "📋 Recap" }],
-      [{ text: "🗑 Delete" }],
+      [{ text: "🗑 Delete" }, { text: "📊 Dashboard" }],
     ],
     resize_keyboard: true,
     is_persistent: true,
