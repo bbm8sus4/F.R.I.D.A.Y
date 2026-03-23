@@ -2883,6 +2883,8 @@ async function handleRecapCallback(env, callbackQuery) {
 
       const recapText = `📋 Recap "${groupName}" (${days} วัน)\n\n${cleanResponse}`;
 
+      const shareButton = [[{ text: "📤 ส่งสรุปไปกลุ่ม", callback_data: `recap:share:${targetChatId}:${days}` }]];
+
       // If too long for edit, send as new message
       if (recapText.length > 4000) {
         await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/editMessageText`, {
@@ -2895,6 +2897,8 @@ async function handleRecapCallback(env, callbackQuery) {
           }),
         });
         await sendTelegram(env, chatId, cleanResponse, null);
+        await sendTelegramWithKeyboard(env, chatId,
+          "👆 ต้องการส่งสรุปนี้ไปกลุ่มไหมคะนาย?", null, shareButton);
       } else {
         await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/editMessageText`, {
           method: "POST",
@@ -2903,6 +2907,7 @@ async function handleRecapCallback(env, callbackQuery) {
             chat_id: chatId,
             message_id: messageId,
             text: recapText,
+            reply_markup: { inline_keyboard: shareButton },
           }),
         });
       }
@@ -2965,6 +2970,233 @@ async function handleRecapCallback(env, callbackQuery) {
       console.error("handleRecapCallback c error:", err);
       await answerCallback();
     }
+    return;
+  }
+
+  if (action === "share") {
+    // Share recap to group: re-generate in group-appropriate tone
+    await answerCallback();
+    try {
+      // Parse targetChatId and time range from callback data
+      // Format: recap:share:{chatId}:{days} or recap:share:{chatId}:{startDate}:{endDate}
+      const remaining = parts.slice(2);
+      let targetChatId, days, dateRange;
+      // Last part(s) are the time range; chatId may be negative (e.g. -100xxx)
+      const lastPart = remaining[remaining.length - 1];
+      const secondLast = remaining.length >= 2 ? remaining[remaining.length - 2] : null;
+      if (secondLast && /^\d{4}-\d{2}-\d{2}$/.test(secondLast) && /^\d{4}-\d{2}-\d{2}$/.test(lastPart)) {
+        // Date range format
+        dateRange = { startDate: secondLast, endDate: lastPart };
+        targetChatId = remaining.slice(0, -2).join(":");
+      } else {
+        days = Math.min(Math.max(Number(lastPart) || 7, 1), 30);
+        targetChatId = remaining.slice(0, -1).join(":");
+      }
+
+      const row = await env.DB.prepare(
+        `SELECT chat_title FROM group_registry WHERE chat_id = ?`
+      ).bind(targetChatId).first();
+      const groupName = row?.chat_title || `Group ${targetChatId}`;
+
+      // Show loading state
+      await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/editMessageText`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          chat_id: chatId,
+          message_id: messageId,
+          text: `⏳ กำลังเตรียมสรุปสำหรับกลุ่ม "${groupName}"...`,
+          reply_markup: { inline_keyboard: [] },
+        }),
+      });
+
+      // Fetch messages
+      const msgQuery = dateRange
+        ? `SELECT message_text, first_name, username, chat_title, created_at
+           FROM messages WHERE chat_id = ? AND date(created_at) >= ? AND date(created_at) <= ?
+           ORDER BY created_at ASC LIMIT 500`
+        : `SELECT message_text, first_name, username, chat_title, created_at
+           FROM messages WHERE chat_id = ? AND created_at > ?
+           ORDER BY created_at ASC LIMIT 500`;
+
+      const msgParams = dateRange
+        ? [targetChatId, dateRange.startDate, dateRange.endDate]
+        : [targetChatId, new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString()];
+
+      const { results: messages } = await env.DB.prepare(msgQuery).bind(...msgParams).all();
+
+      // Fetch summaries
+      const sumQuery = dateRange
+        ? `SELECT summary_text, summary_date FROM summaries
+           WHERE chat_id = ? AND summary_date >= ? AND summary_date <= ?
+           ORDER BY summary_date ASC`
+        : `SELECT summary_text, summary_date FROM summaries
+           WHERE chat_id = ? AND summary_date >= ?
+           ORDER BY summary_date ASC`;
+
+      const sumParams = dateRange
+        ? [targetChatId, dateRange.startDate, dateRange.endDate]
+        : [targetChatId, new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)];
+
+      const { results: summaries } = await env.DB.prepare(sumQuery).bind(...sumParams).all();
+
+      if (!messages.length && !summaries.length) {
+        await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/editMessageText`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            chat_id: chatId,
+            message_id: messageId,
+            text: `📋 ไม่พบข้อมูลสำหรับสร้างสรุปค่ะนาย`,
+          }),
+        });
+        return;
+      }
+
+      const formattedMsgs = formatMessages(messages);
+      const summaryTexts = summaries.map(s => `[สรุปวันที่ ${s.summary_date}]\n${s.summary_text}`).join("\n\n");
+
+      const contextBlock = [
+        summaryTexts ? `=== สรุปรายวัน ===\n${summaryTexts}` : "",
+        formattedMsgs ? `=== ข้อความล่าสุด ===\n${formattedMsgs}` : "",
+      ].filter(Boolean).join("\n\n");
+
+      const periodText = dateRange
+        ? `ช่วง ${dateRange.startDate} ถึง ${dateRange.endDate}`
+        : `${days} วันที่ผ่านมา`;
+
+      const aiPrompt = `สรุปบทสนทนาของกลุ่ม "${groupName}" ในช่วง${periodText}
+เขียนเป็นภาษาไทย สรุปสั้นกระชับเข้าใจง่ายสำหรับสมาชิกในกลุ่ม
+แบ่งหัวข้อชัดเจน ระบุประเด็นสำคัญและสิ่งที่ต้องติดตาม
+เขียนในโทนเป็นมิตร ใช้ภาษาที่เหมาะกับการสื่อสารในกลุ่ม
+ห้ามใส่ action tags ใดๆ`;
+
+      const aiResponse = await askGemini(env, aiPrompt, contextBlock, null);
+      const cleanResponse = stripHtmlTags(
+        aiResponse
+          .replace(/\[SEND:[^\]]+\]/g, '')
+          .replace(/\[REMEMBER:\w+:[^\]]+\]/g, '')
+          .replace(/\[FORGET:\d+\]/g, '')
+          .replace(/[•*\-]?\s*<a\s+href="https?:\/\/vertexaisearch\.cloud\.google\.com\/[^"]*">[^<]*<\/a>/g, '')
+      ).replace(/\n{3,}/g, '\n\n').trim();
+
+      // Show preview with approve/reject buttons
+      const esc = (t) => t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      const previewText = `📝 ข้อความที่จะส่งไปยัง "${esc(groupName)}":\n\n${esc(cleanResponse)}`;
+      const buttons = [
+        [
+          { text: "✅ อนุมัติส่ง", callback_data: `recap:approve:${targetChatId}` },
+          { text: "❌ ยกเลิก", callback_data: `recap:reject:${targetChatId}` },
+        ],
+      ];
+      await sendTelegramWithKeyboard(env, chatId, previewText, null, buttons);
+    } catch (err) {
+      console.error("handleRecapCallback share error:", err);
+      await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/editMessageText`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          chat_id: chatId,
+          message_id: messageId,
+          text: `❌ เกิดข้อผิดพลาด: ${err.message}`,
+        }),
+      });
+    }
+    return;
+  }
+
+  if (action === "approve") {
+    // Approve: send recap to group
+    const targetChatId = parts.slice(2).join(":");
+    const fullText = callbackQuery.message.text || "";
+    const messageToSend = fullText.replace(/^[^\n]*\n\n/, "");
+
+    const sendRes = await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chat_id: targetChatId, text: messageToSend }),
+    });
+    let sendOk = false;
+    if (sendRes.ok) {
+      try {
+        const sendResult = await sendRes.json();
+        if (sendResult.ok) {
+          sendOk = true;
+          await trackBotMessage(env, targetChatId, sendResult.result.message_id, messageToSend);
+        }
+      } catch (e) { /* ignore */ }
+    } else {
+      console.error("recap approve send error:", await sendRes.text());
+    }
+
+    // Remove inline buttons from preview
+    await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/editMessageReplyMarkup`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chat_id: chatId,
+        message_id: messageId,
+        reply_markup: { inline_keyboard: [] },
+      }),
+    });
+
+    const REPLY_KB = {
+      keyboard: [
+        [{ text: "📋 Pending" }, { text: "🧠 Memories" }],
+        [{ text: "📨 Send" }, { text: "📋 Recap" }],
+        [{ text: "🗑 Delete" }, { text: "📊 Dashboard" }],
+      ],
+      resize_keyboard: true,
+      is_persistent: true,
+    };
+
+    await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chat_id: chatId,
+        text: sendOk ? "✅ ส่งสรุปไปกลุ่มแล้วค่ะนาย" : "❌ ส่งไม่สำเร็จ",
+        reply_markup: REPLY_KB,
+      }),
+    });
+
+    await answerCallback();
+    return;
+  }
+
+  if (action === "reject") {
+    // Reject: cancel sending recap to group
+    await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/editMessageReplyMarkup`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chat_id: chatId,
+        message_id: messageId,
+        reply_markup: { inline_keyboard: [] },
+      }),
+    });
+
+    const REPLY_KB = {
+      keyboard: [
+        [{ text: "📋 Pending" }, { text: "🧠 Memories" }],
+        [{ text: "📨 Send" }, { text: "📋 Recap" }],
+        [{ text: "🗑 Delete" }, { text: "📊 Dashboard" }],
+      ],
+      resize_keyboard: true,
+      is_persistent: true,
+    };
+
+    await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chat_id: chatId,
+        text: "❌ ยกเลิกแล้วค่ะนาย",
+        reply_markup: REPLY_KB,
+      }),
+    });
+
+    await answerCallback();
     return;
   }
 }
@@ -3044,6 +3276,14 @@ async function handleRecapReply(env, message, targetChatId, instruction) {
       : `📋 Recap "${groupName}" (7 วัน)`;
 
     await sendTelegram(env, message.chat.id, `${header}\n\n${cleanResponse}`, message.message_id);
+
+    // Offer share button
+    const shareData = dateRange
+      ? `recap:share:${targetChatId}:${dateRange.startDate}:${dateRange.endDate}`
+      : `recap:share:${targetChatId}:7`;
+    await sendTelegramWithKeyboard(env, message.chat.id,
+      "👆 ต้องการส่งสรุปนี้ไปกลุ่มไหมคะนาย?", null,
+      [[{ text: "📤 ส่งสรุปไปกลุ่ม", callback_data: shareData }]]);
   } catch (err) {
     console.error("handleRecapReply error:", err);
     await sendTelegram(env, message.chat.id, "❌ เกิดข้อผิดพลาด: " + err.message, message.message_id);
