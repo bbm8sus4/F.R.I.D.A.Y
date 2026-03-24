@@ -134,7 +134,7 @@ async function handleApiRequest(request, url, env) {
         `SELECT COUNT(*) as total FROM tasks WHERE status = ?`
       ).bind(status).first();
       const { results } = await env.DB.prepare(
-        `SELECT id, description, status, result,
+        `SELECT id, description, status, result, due_on,
                 datetime(created_at, '+7 hours') as created_at,
                 datetime(completed_at, '+7 hours') as completed_at
          FROM tasks WHERE status = ? ORDER BY created_at DESC LIMIT ? OFFSET ?`
@@ -742,9 +742,17 @@ async function getSmartContext(db, chatId, isDM, userQuery) {
      ORDER BY created_at DESC LIMIT 50`
   );
   const tasksStmt = db.prepare(
-    `SELECT id, description, status, datetime(created_at, '+7 hours') as created_at
+    `SELECT id, description, status, due_on, datetime(created_at, '+7 hours') as created_at
      FROM tasks WHERE status = 'pending'
-     ORDER BY created_at ASC LIMIT 5`
+     ORDER BY
+       CASE WHEN due_on IS NOT NULL THEN 0 ELSE 1 END,
+       due_on ASC, created_at ASC
+     LIMIT 10`
+  );
+  const recentDoneStmt = db.prepare(
+    `SELECT id, description, result, datetime(completed_at, '+7 hours') as completed_at
+     FROM tasks WHERE status = 'done' AND completed_at > datetime('now', '-24 hours')
+     ORDER BY completed_at DESC LIMIT 5`
   );
 
   let batchStmts;
@@ -760,6 +768,7 @@ async function getSmartContext(db, chatId, isDM, userQuery) {
          LIMIT 100`
       ),
       tasksStmt,
+      recentDoneStmt,
     ];
   } else {
     batchStmts = [
@@ -771,6 +780,7 @@ async function getSmartContext(db, chatId, isDM, userQuery) {
          ORDER BY created_at ASC LIMIT 100`
       ).bind(chatId),
       tasksStmt,
+      recentDoneStmt,
     ];
   }
 
@@ -810,11 +820,33 @@ async function getSmartContext(db, chatId, isDM, userQuery) {
     }
   }
 
+  const todayStr = new Date(Date.now() + 7 * 3600000).toISOString().slice(0, 10);
   const activeTasks = batchResults[2].results;
   if (activeTasks.length > 0) {
     context += "=== Tasks ที่ยังไม่เสร็จ ===\n";
     context += activeTasks
-      .map(t => `- Task #${t.id} (${t.created_at}): "${t.description}"`)
+      .map(t => {
+        let line = `- Task #${t.id} (สร้าง: ${t.created_at}): "${t.description}"`;
+        if (t.due_on) {
+          if (t.due_on < todayStr) line += ` [🔴 เลยกำหนด: ${t.due_on}]`;
+          else line += ` [📅 กำหนด: ${t.due_on}]`;
+        }
+        return line;
+      })
+      .join("\n");
+    context += "\n\n";
+  }
+
+  const recentDone = batchResults[3].results;
+  if (recentDone.length > 0) {
+    context += "=== Tasks ที่เสร็จล่าสุด (24 ชม.) ===\n";
+    context += recentDone
+      .map(t => {
+        let line = `- Task #${t.id}: "${t.description}"`;
+        if (t.result) line += ` → "${t.result}"`;
+        line += ` (เสร็จ: ${t.completed_at})`;
+        return line;
+      })
       .join("\n");
     context += "\n\n";
   }
@@ -1171,6 +1203,18 @@ async function askGemini(env, userMessage, context, imageData) {
    - id ดูจาก context "Tasks ที่ยังไม่เสร็จ"
    - ตัวอย่าง: บอสบอก "slide ประชุมเสร็จแล้ว" + มี Task #5 → [TASK_DONE:5:เสร็จแล้ว slide ประชุม]
    - ใช้ได้เมื่อมี task ที่ตรงกับสิ่งที่บอสพูดถึงเท่านั้น ห้ามเดา
+
+5. สร้าง Task: [TASK_CREATE:description] หรือ [TASK_CREATE:description:YYYY-MM-DD]
+   - เมื่อบอสพูดถึงสิ่งที่ต้องทำ/อย่าลืม/ฝากด้วย ให้สร้าง task อัตโนมัติ
+   - ถ้ามีวันกำหนดส่ง ใส่ YYYY-MM-DD ต่อท้าย (คำนวณจากวันนี้ถ้าบอสพูดว่า "วันศุกร์" "อีก 3 วัน")
+   - ตัวอย่าง: "อย่าลืมส่ง report วันศุกร์" → [TASK_CREATE:ส่ง report:2026-03-28]
+   - ตัวอย่าง: "เพิ่ม task โทรหาลูกค้า" → [TASK_CREATE:โทรหาลูกค้า]
+   - ยืนยันกับบอสเสมอว่าสร้าง task อะไร กำหนดวันไหน
+
+6. ยกเลิก Task: [TASK_CANCEL:id]
+   - เมื่อบอสบอกให้ยกเลิก/ลบ task ให้ใช้ tag นี้
+   - id ดูจาก context "Tasks ที่ยังไม่เสร็จ"
+   - ยืนยันกับบอสว่ายกเลิกแล้ว
 
 [Memory & Intelligence]
 ---
@@ -1654,8 +1698,28 @@ async function parseAndExecuteActions(env, reply) {
     actionsExecuted++;
   }
 
+  // 5. Execute TASK_CREATE actions
+  const taskCreateRegex = /\[TASK_CREATE:([^\]:\n]+?)(?::(\d{4}-\d{2}-\d{2}))?\]/g;
+  while ((match = taskCreateRegex.exec(reply)) !== null) {
+    const desc = match[1].trim();
+    const dueOn = match[2] || null;
+    await env.DB.prepare(
+      `INSERT INTO tasks (description, due_on) VALUES (?, ?)`
+    ).bind(desc, dueOn).run();
+    actionsExecuted++;
+  }
+
+  // 6. Execute TASK_CANCEL actions
+  const taskCancelRegex = /\[TASK_CANCEL:(\d+)\]/g;
+  while ((match = taskCancelRegex.exec(reply)) !== null) {
+    await env.DB.prepare(
+      `UPDATE tasks SET status='cancelled', completed_at=datetime('now') WHERE id=? AND status='pending'`
+    ).bind(Number(match[1])).run();
+    actionsExecuted++;
+  }
+
   // ตรวจว่ามี action tags ไหม (ก่อน strip) — รวม tag ที่ Gemini ใส่ชื่อกลุ่มแทน chat_id ด้วย
-  const hasActionTags = /\[(SEND|REMEMBER|FORGET|TASK_DONE):/.test(reply);
+  const hasActionTags = /\[(SEND|REMEMBER|FORGET|TASK_DONE|TASK_CREATE|TASK_CANCEL):/.test(reply);
 
   // Strip all action tags from reply text (boss sees clean text)
   // SEND: match ทุกรูปแบบ (ทั้ง chat_id ตัวเลข และชื่อกลุ่ม)
@@ -1664,6 +1728,8 @@ async function parseAndExecuteActions(env, reply) {
     .replace(/\[REMEMBER:\w+:[^\]]+\]/g, '')
     .replace(/\[FORGET:\d+\]/g, '')
     .replace(/\[TASK_DONE:\d+:[^\]]+\]/g, '')
+    .replace(/\[TASK_CREATE:[^\]]+\]/g, '')
+    .replace(/\[TASK_CANCEL:\d+\]/g, '')
     .trim();
 
   return { cleanReply, actionsExecuted, hasActionTags };
@@ -3612,44 +3678,102 @@ async function handleTaskCommand(env, message, args) {
       .prepare(`INSERT INTO tasks (description) VALUES (?)`)
       .bind(description)
       .run();
-    await sendTelegram(env, message.chat.id, `📌 สร้าง Task #${meta.last_row_id} แล้วค่ะ\n"${description}"`, message.message_id);
+    const id = meta.last_row_id;
+    await sendTelegramWithKeyboard(env, message.chat.id,
+      `📌 สร้าง Task #${id} แล้วค่ะ\n"${escapeHtml(description)}"`,
+      message.message_id,
+      [[
+        { text: `✅ Done #${id}`, callback_data: `tk:d:${id}` },
+        { text: `❌ Cancel #${id}`, callback_data: `tk:x:${id}` },
+      ]]
+    );
   } catch (err) {
     console.error("handleTaskCommand error:", err);
   }
 }
 
+async function buildTasksDisplay(env) {
+  const { results } = await env.DB
+    .prepare(
+      `SELECT id, description, status, result, due_on,
+              datetime(created_at, '+7 hours') as created_at,
+              datetime(completed_at, '+7 hours') as completed_at
+       FROM tasks
+       WHERE status = 'pending'
+          OR (status IN ('done','cancelled') AND completed_at > datetime('now', '-48 hours'))
+       ORDER BY
+         CASE status WHEN 'pending' THEN 0 ELSE 1 END,
+         CASE WHEN status='pending' AND due_on IS NOT NULL AND due_on < date('now', '+7 hours') THEN 0
+              WHEN status='pending' AND due_on IS NOT NULL THEN 1
+              ELSE 2 END,
+         due_on ASC, created_at ASC
+       LIMIT 25`
+    )
+    .all();
+
+  if (results.length === 0) {
+    return { text: "ไม่มี task ค้างอยู่เลยค่ะนาย 🎉", buttons: [] };
+  }
+
+  const todayStr = new Date(Date.now() + 7 * 3600000).toISOString().slice(0, 10);
+  const overdue = results.filter(t => t.status === "pending" && t.due_on && t.due_on < todayStr);
+  const pending = results.filter(t => t.status === "pending" && !(t.due_on && t.due_on < todayStr));
+  const done = results.filter(t => t.status !== "pending");
+
+  let text = "<b>📝 Tasks</b>\n\n";
+  const buttons = [];
+
+  if (overdue.length > 0) {
+    text += "<b>🔴 เกินกำหนด:</b>\n";
+    for (const t of overdue) {
+      const daysOver = Math.floor((new Date(todayStr) - new Date(t.due_on)) / 86400000);
+      text += `  ⚠️ <b>#${t.id}</b> ${escapeHtml(t.description)}\n`;
+      text += `     📅 กำหนด: ${t.due_on} (เลย ${daysOver} วัน)\n`;
+      buttons.push([
+        { text: `✅ Done #${t.id}`, callback_data: `tk:d:${t.id}` },
+        { text: `❌ Cancel #${t.id}`, callback_data: `tk:x:${t.id}` },
+      ]);
+    }
+    text += "\n";
+  }
+
+  if (pending.length > 0) {
+    text += "<b>⏳ รอดำเนินการ:</b>\n";
+    for (const t of pending) {
+      text += `  ⏳ <b>#${t.id}</b> ${escapeHtml(t.description)}\n`;
+      if (t.due_on) text += `     📅 กำหนด: ${t.due_on}\n`;
+      buttons.push([
+        { text: `✅ Done #${t.id}`, callback_data: `tk:d:${t.id}` },
+        { text: `❌ Cancel #${t.id}`, callback_data: `tk:x:${t.id}` },
+      ]);
+    }
+    text += "\n";
+  }
+
+  if (done.length > 0) {
+    text += "<b>✅ เสร็จล่าสุด:</b>\n";
+    for (const t of done) {
+      const icon = t.status === "done" ? "✅" : "❌";
+      text += `  ${icon} <b>#${t.id}</b> ${escapeHtml(t.description)}`;
+      if (t.result) text += ` — "${escapeHtml(t.result)}"`;
+      text += "\n";
+      if (t.completed_at) text += `     <i>${t.status === "done" ? "เสร็จ" : "ยกเลิก"}: ${t.completed_at}</i>\n`;
+    }
+    text += "\n";
+  }
+
+  buttons.push([{ text: "📋 ดูประวัติทั้งหมด", callback_data: "tk:h:0" }]);
+
+  return { text, buttons };
+}
+
 async function handleTasksCommand(env, message) {
   try {
-    const { results } = await env.DB
-      .prepare(
-        `SELECT id, description, status, result, datetime(created_at, '+7 hours') as created_at
-         FROM tasks WHERE status IN ('pending','done')
-         ORDER BY CASE status WHEN 'pending' THEN 0 ELSE 1 END, created_at ASC LIMIT 20`
-      )
-      .all();
-    if (results.length === 0) {
-      await sendTelegram(env, message.chat.id, "ไม่มี task ค้างอยู่เลยค่ะนาย 🎉", message.message_id);
-      return;
-    }
-    let text = "<b>📝 Tasks</b>\n\n";
-    const buttons = [];
-    for (const t of results) {
-      const icon = t.status === "pending" ? "⏳" : "✅";
-      text += `${icon} <b>#${t.id}</b> ${escapeHtml(t.description)}\n`;
-      if (t.result) text += `   ↳ ${escapeHtml(t.result)}\n`;
-      text += `   <i>${t.created_at}</i>\n\n`;
-      if (t.status === "pending") {
-        buttons.push([
-          { text: `✅ Done #${t.id}`, callback_data: `tk:d:${t.id}` },
-          { text: `❌ Cancel #${t.id}`, callback_data: `tk:x:${t.id}` },
-        ]);
-      }
-    }
-    text += "สั่ง: /task &lt;งาน&gt;\nเสร็จ: /done &lt;id&gt; [ผลลัพธ์]\nยกเลิก: /cancel &lt;id&gt;";
+    const { text, buttons } = await buildTasksDisplay(env);
     if (buttons.length > 0) {
       await sendTelegramWithKeyboard(env, message.chat.id, text, message.message_id, buttons);
     } else {
-      await sendTelegram(env, message.chat.id, text, message.message_id, true);
+      await sendTelegram(env, message.chat.id, text, message.message_id);
     }
   } catch (err) {
     console.error("handleTasksCommand error:", err);
@@ -3679,7 +3803,6 @@ async function handleDoneCommand(env, message, args) {
       .run();
     let msg = `✅ Task #${taskId} เสร็จแล้วค่ะ — "${task.description}"`;
     if (result) msg += `\n↳ ${result}`;
-    msg += "\n(จะลบอัตโนมัติใน 24 ชม.)";
     await sendTelegram(env, message.chat.id, msg, message.message_id);
   } catch (err) {
     console.error("handleDoneCommand error:", err);
@@ -3715,8 +3838,7 @@ async function handleTaskCallback(env, callbackQuery) {
   const chatId = callbackQuery.message.chat.id;
   const messageId = callbackQuery.message.message_id;
   const parts = callbackQuery.data.split(":");
-  const action = parts[1]; // "d" (done) or "x" (cancel)
-  const taskId = Number(parts[2]);
+  const action = parts[1]; // "d" (done), "x" (cancel), "h" (history), "b" (back)
 
   // Answer callback immediately
   await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/answerCallbackQuery`, {
@@ -3726,6 +3848,86 @@ async function handleTaskCallback(env, callbackQuery) {
   });
 
   try {
+    // History view
+    if (action === "h") {
+      const offset = Number(parts[2]) || 0;
+      const { results } = await env.DB.prepare(
+        `SELECT id, description, status, result, due_on,
+                datetime(completed_at, '+7 hours') as completed_at
+         FROM tasks WHERE status IN ('done','cancelled')
+         ORDER BY completed_at DESC LIMIT 10 OFFSET ?`
+      ).bind(offset).all();
+
+      const total = (await env.DB.prepare(
+        `SELECT COUNT(*) as c FROM tasks WHERE status IN ('done','cancelled')`
+      ).first()).c;
+
+      if (results.length === 0) {
+        await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/editMessageText`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            chat_id: chatId,
+            message_id: messageId,
+            text: "📋 ยังไม่มีประวัติ Tasks ค่ะ",
+            parse_mode: "HTML",
+            reply_markup: { inline_keyboard: [[{ text: "🔙 กลับ Tasks", callback_data: "tk:b" }]] },
+          }),
+        });
+        return;
+      }
+
+      let text = "<b>📋 ประวัติ Tasks</b>\n\n";
+      for (const t of results) {
+        const icon = t.status === "done" ? "✅" : "❌";
+        text += `${icon} <b>#${t.id}</b> ${escapeHtml(t.description)}\n`;
+        if (t.result) text += `   ↳ ${escapeHtml(t.result)}\n`;
+        if (t.due_on) text += `   📅 กำหนด: ${t.due_on}\n`;
+        text += `   <i>${t.status === "done" ? "เสร็จ" : "ยกเลิก"}: ${t.completed_at}</i>\n\n`;
+      }
+      text += `แสดง ${offset + 1}-${offset + results.length} จาก ${total} รายการ`;
+
+      const navButtons = [];
+      if (offset > 0) navButtons.push({ text: "◀️ ก่อนหน้า", callback_data: `tk:h:${offset - 10}` });
+      if (offset + 10 < total) navButtons.push({ text: "▶️ ถัดไป", callback_data: `tk:h:${offset + 10}` });
+
+      const buttons = [];
+      if (navButtons.length) buttons.push(navButtons);
+      buttons.push([{ text: "🔙 กลับ Tasks", callback_data: "tk:b" }]);
+
+      await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/editMessageText`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          chat_id: chatId,
+          message_id: messageId,
+          text: sanitizeHtml(text),
+          parse_mode: "HTML",
+          reply_markup: { inline_keyboard: buttons },
+        }),
+      });
+      return;
+    }
+
+    // Back to tasks view
+    if (action === "b") {
+      const { text, buttons } = await buildTasksDisplay(env);
+      await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/editMessageText`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          chat_id: chatId,
+          message_id: messageId,
+          text: sanitizeHtml(text),
+          parse_mode: "HTML",
+          reply_markup: { inline_keyboard: buttons },
+        }),
+      });
+      return;
+    }
+
+    // Done / Cancel actions
+    const taskId = Number(parts[2]);
     const task = await env.DB
       .prepare(`SELECT id, description FROM tasks WHERE id = ? AND status = 'pending'`)
       .bind(taskId)
@@ -4240,27 +4442,53 @@ async function proactiveAlert(env) {
   try {
     const bossId = env.BOSS_USER_ID;
 
+    // Group 1: overdue (due_on < today)
     const { results: overdue } = await env.DB
       .prepare(
-        `SELECT id, description, datetime(created_at, '+7 hours') as created_at
+        `SELECT id, description, due_on, datetime(created_at, '+7 hours') as created_at
          FROM tasks
-         WHERE status = 'pending' AND created_at < datetime('now', '-24 hours')
-         ORDER BY created_at ASC LIMIT 10`
+         WHERE status = 'pending' AND due_on IS NOT NULL AND due_on < date('now', '+7 hours')
+         ORDER BY due_on ASC LIMIT 10`
       )
       .all();
 
-    if (overdue.length === 0) return;
+    // Group 2: stale (no due_on, created > 48h ago)
+    const { results: stale } = await env.DB
+      .prepare(
+        `SELECT id, description, datetime(created_at, '+7 hours') as created_at
+         FROM tasks
+         WHERE status = 'pending' AND due_on IS NULL AND created_at < datetime('now', '-48 hours')
+         ORDER BY created_at ASC LIMIT 5`
+      )
+      .all();
 
-    let alert = "⏰ <b>Tasks ค้างเกิน 24 ชม.</b>\n\n";
+    if (overdue.length === 0 && stale.length === 0) return;
+
+    let alert = "⏰ <b>Tasks ที่ต้องจัดการ</b>\n\n";
     const buttons = [];
-    for (const t of overdue) {
-      alert += `⏳ <b>#${t.id}</b> ${escapeHtml(t.description)}\n   <i>${t.created_at}</i>\n\n`;
-      buttons.push([
-        { text: `✅ Done #${t.id}`, callback_data: `tk:d:${t.id}` },
-        { text: `❌ Cancel #${t.id}`, callback_data: `tk:x:${t.id}` },
-      ]);
+
+    if (overdue.length > 0) {
+      alert += "<b>🔴 เกินกำหนด:</b>\n";
+      for (const t of overdue) {
+        alert += `⚠️ <b>#${t.id}</b> ${escapeHtml(t.description)} (กำหนด ${t.due_on})\n`;
+        buttons.push([
+          { text: `✅ Done #${t.id}`, callback_data: `tk:d:${t.id}` },
+          { text: `❌ Cancel #${t.id}`, callback_data: `tk:x:${t.id}` },
+        ]);
+      }
+      alert += "\n";
     }
-    alert += `รวม ${overdue.length} รายการค้าง`;
+
+    if (stale.length > 0) {
+      alert += "<b>⏳ ค้างนานเกิน 48 ชม.:</b>\n";
+      for (const t of stale) {
+        alert += `⏳ <b>#${t.id}</b> ${escapeHtml(t.description)} (สร้างเมื่อ ${t.created_at})\n`;
+        buttons.push([
+          { text: `✅ Done #${t.id}`, callback_data: `tk:d:${t.id}` },
+          { text: `❌ Cancel #${t.id}`, callback_data: `tk:x:${t.id}` },
+        ]);
+      }
+    }
 
     await sendTelegramWithKeyboard(env, bossId, alert, null, buttons);
   } catch (err) {
@@ -4848,12 +5076,12 @@ async function summarizeAndCleanup(env) {
       }
     }
 
-    // 6. Auto-delete completed tasks > 24 hours (smart archival)
+    // 6. Auto-archive completed tasks > 7 days, delete > 30 days
     let tasksArchived = 0;
     let tasksDeleted = 0;
     const { results: doneTasks } = await env.DB.prepare(
       `SELECT id, description, result FROM tasks
-       WHERE status = 'done' AND completed_at < datetime('now', '-24 hours')
+       WHERE status = 'done' AND completed_at < datetime('now', '-7 days')
          AND archived_to_memory_id IS NULL LIMIT 10`
     ).all();
 
@@ -4871,7 +5099,7 @@ async function summarizeAndCleanup(env) {
 
     const taskDeleteResult = await env.DB.prepare(
       `DELETE FROM tasks
-       WHERE (status IN ('done','cancelled')) AND completed_at < datetime('now', '-24 hours')
+       WHERE (status IN ('done','cancelled')) AND completed_at < datetime('now', '-30 days')
          AND (archived_to_memory_id IS NOT NULL OR result IS NULL OR LENGTH(result) <= 50)`
     ).run();
     tasksDeleted = taskDeleteResult.meta.changes;
