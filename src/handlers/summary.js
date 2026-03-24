@@ -450,6 +450,7 @@ export async function handleSummaryCallback(env, callbackQuery) {
     // sm:c:<filter> → custom days (force_reply)
     const cMatch = data.match(/^sm:c:(.+)$/);
     if (cMatch) {
+      await answerCallback();
       const companyFilter = cMatch[1];
       // Store pending custom in DB
       await env.DB.prepare(
@@ -481,7 +482,6 @@ export async function handleSummaryCallback(env, callbackQuery) {
         }),
       });
 
-      await answerCallback();
       return;
     }
 
