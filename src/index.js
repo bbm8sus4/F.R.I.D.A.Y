@@ -1,16 +1,6 @@
 // ===== Friday — Oracle AI / External Brain =====
 // จิตสำนึกดิจิทัลที่จำทุกอย่าง จับ pattern พฤติกรรม แจ้งเตือนเชิงรุก
 
-// ===== คำที่บ่งบอกคำสัญญา/งานค้าง =====
-const PROMISE_PATTERNS = [
-  /รับปาก(?!กา)/,
-  /สัญญา(?!ณ|เช่า|ซื้อขาย|จ้าง|บริการ)/,
-  /ไม่เกิน(วัน|พรุ่ง|ศุกร์|จันทร์|อังคาร|พุธ|พฤหัส|เสาร์|อาทิตย์)/,
-  /อีก\s?\d+\s?(วัน|ชม|ชั่วโมง|นาที)/,
-  /deadline/i,
-  /I('ll| will) get (it|this|that) done/i,
-];
-
 // ===== Urgent keyword patterns (real-time alert, no AI) =====
 const URGENT_PATTERNS = [
   { pattern: /ด่วน(มาก)?|urgent|emergency|asap/i, type: "urgent" },
@@ -117,7 +107,7 @@ async function handleApiRequest(request, url, env) {
     if (path === "/dashboard" && method === "GET") {
       const safeQuery = (query) => query.catch(() => null);
       const [pending, alertCounts, memoryCount, msgStats, groups] = await Promise.all([
-        env.DB.prepare(`SELECT COUNT(*) as count FROM commitments WHERE status = 'pending'`).first(),
+        env.DB.prepare(`SELECT COUNT(*) as count FROM tasks WHERE status = 'pending'`).first(),
         safeQuery(env.DB.prepare(`SELECT urgency, COUNT(*) as count FROM alerts WHERE created_at > datetime('now', '-7 days') GROUP BY urgency`).all()),
         env.DB.prepare(`SELECT COUNT(*) as count FROM memories`).first(),
         env.DB.prepare(`SELECT COUNT(*) as total, COUNT(DISTINCT chat_id) as chats FROM messages WHERE created_at > datetime('now', '-24 hours')`).first(),
@@ -125,7 +115,7 @@ async function handleApiRequest(request, url, env) {
       ]);
 
       return new Response(JSON.stringify({
-        commitments: { pending: pending.count },
+        tasks: { pending: pending.count },
         alerts: Object.fromEntries((alertCounts?.results || []).map(r => [r.urgency, r.count])),
         memories: { total: memoryCount.count },
         messages: { last24h: msgStats.total, activeChats: msgStats.chats },
@@ -133,58 +123,36 @@ async function handleApiRequest(request, url, env) {
       }), { headers });
     }
 
-    // GET /api/commitments — list with filters
-    if (path === "/commitments" && method === "GET") {
+    // GET /api/tasks — list with filters
+    if (path === "/tasks" && method === "GET") {
       const status = url.searchParams.get("status") || "pending";
-      const chatId = url.searchParams.get("chat_id");
       const page = Math.max(1, Number(url.searchParams.get("page")) || 1);
       const limit = Math.min(50, Math.max(1, Number(url.searchParams.get("limit")) || 20));
       const offset = (page - 1) * limit;
 
-      let where = `WHERE status = ?`;
-      const params = [status];
-      if (chatId) { where += ` AND chat_id = ?`; params.push(Number(chatId)); }
-
-      const countResult = await env.DB.prepare(`SELECT COUNT(*) as total FROM commitments ${where}`).bind(...params).first();
+      const countResult = await env.DB.prepare(
+        `SELECT COUNT(*) as total FROM tasks WHERE status = ?`
+      ).bind(status).first();
       const { results } = await env.DB.prepare(
-        `SELECT id, chat_id, user_id, username, first_name, promise_text, status,
+        `SELECT id, description, status, result,
                 datetime(created_at, '+7 hours') as created_at,
-                datetime(resolved_at, '+7 hours') as resolved_at
-         FROM commitments ${where} ORDER BY created_at DESC LIMIT ? OFFSET ?`
-      ).bind(...params, limit, offset).all();
+                datetime(completed_at, '+7 hours') as completed_at
+         FROM tasks WHERE status = ? ORDER BY created_at DESC LIMIT ? OFFSET ?`
+      ).bind(status, limit, offset).all();
 
       return new Response(JSON.stringify({
         data: results, total: countResult.total, page, limit,
       }), { headers });
     }
 
-    // PATCH /api/commitments/:id/resolve
-    const resolveMatch = path.match(/^\/commitments\/(\d+)\/resolve$/);
-    if (resolveMatch && method === "PATCH") {
-      const id = Number(resolveMatch[1]);
+    // PATCH /api/tasks/:id/done — mark task done
+    const taskDoneMatch = path.match(/^\/tasks\/(\d+)\/done$/);
+    if (taskDoneMatch && method === "PATCH") {
+      const id = Number(taskDoneMatch[1]);
       await env.DB.prepare(
-        `UPDATE commitments SET status = 'resolved', resolved_at = datetime('now') WHERE id = ? AND status = 'pending'`
+        `UPDATE tasks SET status = 'done', completed_at = datetime('now') WHERE id = ? AND status = 'pending'`
       ).bind(id).run();
       return new Response(JSON.stringify({ ok: true, id }), { headers });
-    }
-
-    // PATCH /api/commitments/resolve-bulk
-    if (path === "/commitments/resolve-bulk" && method === "PATCH") {
-      const body = await request.json();
-      if (body.all) {
-        const result = await env.DB.prepare(
-          `UPDATE commitments SET status = 'resolved', resolved_at = datetime('now') WHERE status = 'pending'`
-        ).run();
-        return new Response(JSON.stringify({ ok: true, resolved: result.meta.changes }), { headers });
-      }
-      if (Array.isArray(body.ids) && body.ids.length > 0) {
-        const placeholders = body.ids.map(() => "?").join(",");
-        const result = await env.DB.prepare(
-          `UPDATE commitments SET status = 'resolved', resolved_at = datetime('now') WHERE id IN (${placeholders}) AND status = 'pending'`
-        ).bind(...body.ids.map(Number)).run();
-        return new Response(JSON.stringify({ ok: true, resolved: result.meta.changes }), { headers });
-      }
-      return new Response(JSON.stringify({ error: "Provide ids array or all:true" }), { status: 400, headers });
     }
 
     // GET /api/alerts — list with filters
@@ -381,6 +349,10 @@ export default {
           ctx.waitUntil(handleRecapCallback(env, callbackQuery));
           return new Response("OK", { status: 200 });
         }
+        if (callbackQuery.data?.startsWith("tk:")) {
+          ctx.waitUntil(handleTaskCallback(env, callbackQuery));
+          return new Response("OK", { status: 200 });
+        }
       }
 
       const message = update.message || update.edited_message;
@@ -430,11 +402,6 @@ export default {
       // เก็บทุกข้อความ (ยกเว้นจาก bot เอง)
       if (!message.from.is_bot) {
         ctx.waitUntil(storeMessage(env.DB, message, text, hasMedia));
-      }
-
-      // จับ pattern คำสัญญา (เฉพาะในกลุ่ม จากคนอื่นที่ไม่ใช่บอส)
-      if (!isDM && !isBoss && !message.from.is_bot) {
-        ctx.waitUntil(detectCommitments(env, message, text));
       }
 
       // แจ้งเตือนบอสเมื่อมีคนแท็ก/reply/เอ่ยถึงในกลุ่ม
@@ -526,7 +493,6 @@ export default {
       // Reply keyboard shortcuts (DM only)
       if (isDM) {
         const shortcutMap = {
-          "📋 Pending": "/pending",
           "🧠 Memories": "/memories",
           "🗑 Delete": "/delete",
           "📨 Send": "/send",
@@ -545,8 +511,6 @@ export default {
         }
         const handlers = {
           "/send": () => handleSendCommand(env, message, parsed.args),
-          "/pending": () => handlePendingCommand(env, message),
-          "/resolve": () => handleResolveCommand(env, message, parsed.args),
           "/remember": () => handleRememberCommand(env, message, parsed.args),
           "/memories": () => handleMemoriesCommand(env, message),
           "/forget": () => handleForgetCommand(env, message, parsed.args),
@@ -701,77 +665,6 @@ async function storeMessage(db, message, text, hasMedia) {
   }
 }
 
-// ===== Pattern Recognition — จับคำสัญญา =====
-
-async function validateCommitmentWithAI(env, text) {
-  try {
-    const model = "gemini-2.5-flash";
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${env.GEMINI_API_KEY}`;
-    const systemPrompt = `Analyze this Thai/English chat message. Is someone making a real personal commitment or promise?
-
-YES = someone promises to DO something, commits to a DEADLINE for their own work, or pledges to deliver something
-NO = mentions a contract document (สัญญาเช่า), signal (สัญญาณ), casual time reference (อีก 5 นาที), other people's deadlines, or general information
-
-Respond with exactly: YES or NO`;
-
-    const response = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        system_instruction: { parts: [{ text: systemPrompt }] },
-        contents: [{ role: "user", parts: [{ text }] }],
-        generationConfig: { maxOutputTokens: 16 },
-      }),
-    });
-
-    if (!response.ok) return true; // fail-open
-    const data = await response.json();
-    const parts = data.candidates?.[0]?.content?.parts;
-    if (!parts) return true;
-
-    let reply = null;
-    for (let i = parts.length - 1; i >= 0; i--) {
-      if (parts[i].text && !parts[i].thought) { reply = parts[i].text; break; }
-    }
-    if (!reply) return true;
-
-    return reply.trim().toUpperCase().startsWith("YES");
-  } catch (err) {
-    console.error("Commitment AI validation error:", err);
-    return true; // fail-open
-  }
-}
-
-async function detectCommitments(env, message, text) {
-  try {
-    let matched = false;
-    for (const pattern of PROMISE_PATTERNS) {
-      if (pattern.test(text)) {
-        matched = true;
-        break;
-      }
-    }
-    if (!matched) return;
-
-    const isReal = await validateCommitmentWithAI(env, text);
-    if (!isReal) return;
-
-    await env.DB
-      .prepare(
-        `INSERT INTO commitments (chat_id, user_id, username, first_name, promise_text, original_message)
-         VALUES (?, ?, ?, ?, ?, ?)`
-      )
-      .bind(
-        message.chat.id, message.from.id,
-        message.from.username || null, message.from.first_name || null,
-        text.substring(0, 200), text
-      )
-      .run();
-  } catch (err) {
-    console.error("Commitment detection error:", err);
-  }
-}
-
 // ===== Context Retrieval =====
 
 const STOP_WORDS = new Set([
@@ -848,10 +741,6 @@ async function getSmartContext(db, chatId, isDM, userQuery) {
      WHERE priority = 'hot'
      ORDER BY created_at DESC LIMIT 50`
   );
-  const commitmentsStmt = db.prepare(
-    `SELECT username, first_name, promise_text, datetime(created_at, '+7 hours') as created_at FROM commitments
-     WHERE status = 'pending' ORDER BY created_at DESC LIMIT 20`
-  );
   const tasksStmt = db.prepare(
     `SELECT id, description, status, datetime(created_at, '+7 hours') as created_at
      FROM tasks WHERE status = 'pending'
@@ -862,7 +751,6 @@ async function getSmartContext(db, chatId, isDM, userQuery) {
   if (isDM) {
     batchStmts = [
       memoriesStmt,
-      commitmentsStmt,
       // DM: ข้อความล่าสุด 2 ชม. จากทุกกลุ่ม
       db.prepare(
         `SELECT username, first_name, message_text, datetime(created_at, '+7 hours') as created_at, chat_title, chat_id
@@ -876,7 +764,6 @@ async function getSmartContext(db, chatId, isDM, userQuery) {
   } else {
     batchStmts = [
       memoriesStmt,
-      commitmentsStmt,
       // Group: ข้อความล่าสุด 2 ชม. กลุ่มนี้
       db.prepare(
         `SELECT username, first_name, message_text, datetime(created_at, '+7 hours') as created_at, chat_title FROM messages
@@ -890,7 +777,6 @@ async function getSmartContext(db, chatId, isDM, userQuery) {
   const batchResults = await db.batch(batchStmts);
 
   const memories = batchResults[0].results;
-  const pendingCommitments = batchResults[1].results;
 
   let context = "";
 
@@ -901,7 +787,7 @@ async function getSmartContext(db, chatId, isDM, userQuery) {
   }
 
   if (isDM) {
-    const allRecent = batchResults[2].results;
+    const allRecent = batchResults[1].results;
     if (allRecent.length > 0) {
       const byGroup = {};
       for (const msg of allRecent) {
@@ -916,7 +802,7 @@ async function getSmartContext(db, chatId, isDM, userQuery) {
       }
     }
   } else {
-    const recent = batchResults[2].results;
+    const recent = batchResults[1].results;
     if (recent.length > 0) {
       context += "=== บทสนทนาล่าสุด 2 ชม. (กลุ่มนี้) ===\n";
       context += formatMessages(recent);
@@ -924,18 +810,7 @@ async function getSmartContext(db, chatId, isDM, userQuery) {
     }
   }
 
-  if (pendingCommitments.length > 0) {
-    context += "=== คำสัญญา/งานค้างที่ยังไม่เสร็จ ===\n";
-    context += pendingCommitments
-      .map((c) => {
-        const name = c.username ? `@${c.username}` : c.first_name || "Unknown";
-        return `- ${name} (${c.created_at}): "${c.promise_text}"`;
-      })
-      .join("\n");
-    context += "\n\n";
-  }
-
-  const activeTasks = batchResults[3].results;
+  const activeTasks = batchResults[2].results;
   if (activeTasks.length > 0) {
     context += "=== Tasks ที่ยังไม่เสร็จ ===\n";
     context += activeTasks
@@ -1721,7 +1596,7 @@ async function sendReplyKeyboard(env, chatId) {
       text: "เลือกคำสั่งได้เลยค่ะนาย:",
       reply_markup: {
         keyboard: [
-          [{ text: "📋 Pending" }, { text: "🧠 Memories" }, { text: "📝 Tasks" }],
+          [{ text: "📝 Tasks" }, { text: "🧠 Memories" }],
           [{ text: "📨 Send" }, { text: "📋 Recap" }],
           [{ text: "🗑 Delete" }, { text: "📊 Dashboard", web_app: { url: env.DASHBOARD_URL || "https://friday-dashboard-3rf.pages.dev" } }],
         ],
@@ -2607,7 +2482,7 @@ async function handleSendCallback(env, callbackQuery) {
 
   const REPLY_KB = {
     keyboard: [
-      [{ text: "📋 Pending" }, { text: "🧠 Memories" }],
+      [{ text: "📝 Tasks" }, { text: "🧠 Memories" }],
       [{ text: "📨 Send" }, { text: "📋 Recap" }],
       [{ text: "🗑 Delete" }, { text: "📊 Dashboard" }],
     ],
@@ -3188,7 +3063,7 @@ async function handleRecapCallback(env, callbackQuery) {
 
     const REPLY_KB = {
       keyboard: [
-        [{ text: "📋 Pending" }, { text: "🧠 Memories" }],
+        [{ text: "📝 Tasks" }, { text: "🧠 Memories" }],
         [{ text: "📨 Send" }, { text: "📋 Recap" }],
         [{ text: "🗑 Delete" }, { text: "📊 Dashboard" }],
       ],
@@ -3224,7 +3099,7 @@ async function handleRecapCallback(env, callbackQuery) {
 
     const REPLY_KB = {
       keyboard: [
-        [{ text: "📋 Pending" }, { text: "🧠 Memories" }],
+        [{ text: "📝 Tasks" }, { text: "🧠 Memories" }],
         [{ text: "📨 Send" }, { text: "📋 Recap" }],
         [{ text: "🗑 Delete" }, { text: "📊 Dashboard" }],
       ],
@@ -3724,75 +3599,6 @@ async function handleDashboardCommand(env, message) {
   ]);
 }
 
-async function handlePendingCommand(env, message) {
-  try {
-    const { results } = await env.DB
-      .prepare(
-        `SELECT id, username, first_name, promise_text, datetime(created_at, '+7 hours') as created_at
-         FROM commitments WHERE status = 'pending'
-         ORDER BY created_at DESC LIMIT 20`
-      )
-      .all();
-
-    if (results.length === 0) {
-      await sendTelegram(env, message.chat.id, "ไม่มีงานค้างค่ะนาย", message.message_id);
-      return;
-    }
-
-    let reply = "งานค้าง/คำสัญญาที่ยังไม่เสร็จ:\n\n";
-    for (const r of results) {
-      const name = r.username ? `@${r.username}` : r.first_name || "Unknown";
-      reply += `#${r.id} — ${name}\n"${r.promise_text}"\nเมื่อ: ${r.created_at}\n\n`;
-    }
-    reply += "ใช้ /resolve <id> เพื่อปิดงาน";
-
-    await sendTelegram(env, message.chat.id, reply, message.message_id);
-  } catch (err) {
-    console.error("handlePendingCommand error:", err);
-  }
-}
-
-async function handleResolveCommand(env, message, args) {
-  try {
-    const input = args.trim();
-    if (!input) {
-      await sendTelegram(env, message.chat.id, "Usage: /resolve <id> หรือ /resolve 1 2 3 หรือ /resolve all", message.message_id);
-      return;
-    }
-
-    // /resolve all — ปิดทั้งหมด
-    if (input.toLowerCase() === "all") {
-      const result = await env.DB
-        .prepare(`UPDATE commitments SET status = 'resolved', resolved_at = datetime('now') WHERE status = 'pending'`)
-        .run();
-      await sendTelegram(env, message.chat.id, `✅ ปิดงานค้างทั้งหมด ${result.meta.changes} รายการแล้วค่ะนาย`, message.message_id);
-      return;
-    }
-
-    // /resolve 1 2 3 หรือ /resolve 1,2,3 — รับหลาย ID
-    const ids = input.split(/[\s,]+/).filter(id => id !== "" && !isNaN(id));
-    if (ids.length === 0) {
-      await sendTelegram(env, message.chat.id, "Usage: /resolve <id> หรือ /resolve 1 2 3 หรือ /resolve all", message.message_id);
-      return;
-    }
-
-    for (const id of ids) {
-      await env.DB
-        .prepare(`UPDATE commitments SET status = 'resolved', resolved_at = datetime('now') WHERE id = ?`)
-        .bind(Number(id))
-        .run();
-    }
-
-    if (ids.length === 1) {
-      await sendTelegram(env, message.chat.id, `✅ งาน #${ids[0]} ปิดแล้วค่ะนาย`, message.message_id);
-    } else {
-      await sendTelegram(env, message.chat.id, `✅ ปิดงาน #${ids.join(", #")} แล้วค่ะนาย (${ids.length} รายการ)`, message.message_id);
-    }
-  } catch (err) {
-    console.error("handleResolveCommand error:", err);
-  }
-}
-
 // ===== Task System — สั่ง → ทำ → จบ → ลบ =====
 
 async function handleTaskCommand(env, message, args) {
@@ -3826,14 +3632,25 @@ async function handleTasksCommand(env, message) {
       return;
     }
     let text = "<b>📝 Tasks</b>\n\n";
+    const buttons = [];
     for (const t of results) {
       const icon = t.status === "pending" ? "⏳" : "✅";
       text += `${icon} <b>#${t.id}</b> ${escapeHtml(t.description)}\n`;
       if (t.result) text += `   ↳ ${escapeHtml(t.result)}\n`;
       text += `   <i>${t.created_at}</i>\n\n`;
+      if (t.status === "pending") {
+        buttons.push([
+          { text: `✅ Done #${t.id}`, callback_data: `tk:d:${t.id}` },
+          { text: `❌ Cancel #${t.id}`, callback_data: `tk:x:${t.id}` },
+        ]);
+      }
     }
     text += "สั่ง: /task &lt;งาน&gt;\nเสร็จ: /done &lt;id&gt; [ผลลัพธ์]\nยกเลิก: /cancel &lt;id&gt;";
-    await sendTelegram(env, message.chat.id, text, message.message_id, true);
+    if (buttons.length > 0) {
+      await sendTelegramWithKeyboard(env, message.chat.id, text, message.message_id, buttons);
+    } else {
+      await sendTelegram(env, message.chat.id, text, message.message_id, true);
+    }
   } catch (err) {
     console.error("handleTasksCommand error:", err);
   }
@@ -3891,6 +3708,60 @@ async function handleCancelCommand(env, message, args) {
     await sendTelegram(env, message.chat.id, `❌ ยกเลิก Task #${taskId} แล้วค่ะ — "${task.description}"`, message.message_id);
   } catch (err) {
     console.error("handleCancelCommand error:", err);
+  }
+}
+
+async function handleTaskCallback(env, callbackQuery) {
+  const chatId = callbackQuery.message.chat.id;
+  const messageId = callbackQuery.message.message_id;
+  const parts = callbackQuery.data.split(":");
+  const action = parts[1]; // "d" (done) or "x" (cancel)
+  const taskId = Number(parts[2]);
+
+  // Answer callback immediately
+  await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/answerCallbackQuery`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ callback_query_id: callbackQuery.id }),
+  });
+
+  try {
+    const task = await env.DB
+      .prepare(`SELECT id, description FROM tasks WHERE id = ? AND status = 'pending'`)
+      .bind(taskId)
+      .first();
+
+    if (!task) {
+      await sendTelegram(env, chatId, `Task #${taskId} ไม่พบ หรือจัดการไปแล้วค่ะ`, null);
+      return;
+    }
+
+    if (action === "d") {
+      await env.DB
+        .prepare(`UPDATE tasks SET status='done', completed_at=datetime('now') WHERE id=?`)
+        .bind(taskId)
+        .run();
+      await sendTelegram(env, chatId, `✅ Task #${taskId} เสร็จแล้วค่ะ — "${task.description}"`, null);
+    } else if (action === "x") {
+      await env.DB
+        .prepare(`UPDATE tasks SET status='cancelled', completed_at=datetime('now') WHERE id=?`)
+        .bind(taskId)
+        .run();
+      await sendTelegram(env, chatId, `❌ ยกเลิก Task #${taskId} แล้วค่ะ — "${task.description}"`, null);
+    }
+
+    // Remove inline buttons from the original message
+    await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/editMessageReplyMarkup`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chat_id: chatId,
+        message_id: messageId,
+        reply_markup: { inline_keyboard: [] },
+      }),
+    });
+  } catch (err) {
+    console.error("handleTaskCallback error:", err);
   }
 }
 
@@ -4371,8 +4242,8 @@ async function proactiveAlert(env) {
 
     const { results: overdue } = await env.DB
       .prepare(
-        `SELECT id, username, first_name, promise_text, datetime(created_at, '+7 hours') as created_at
-         FROM commitments
+        `SELECT id, description, datetime(created_at, '+7 hours') as created_at
+         FROM tasks
          WHERE status = 'pending' AND created_at < datetime('now', '-24 hours')
          ORDER BY created_at ASC LIMIT 10`
       )
@@ -4380,14 +4251,18 @@ async function proactiveAlert(env) {
 
     if (overdue.length === 0) return;
 
-    let alert = "⏰ งานค้างเกิน 24 ชม. ค่ะ\n\n";
-    for (const r of overdue) {
-      const name = r.username ? `@${r.username}` : r.first_name || "Unknown";
-      alert += `#${r.id} ${name}: "${r.promise_text}"\nสัญญาเมื่อ: ${r.created_at}\n\n`;
+    let alert = "⏰ <b>Tasks ค้างเกิน 24 ชม.</b>\n\n";
+    const buttons = [];
+    for (const t of overdue) {
+      alert += `⏳ <b>#${t.id}</b> ${escapeHtml(t.description)}\n   <i>${t.created_at}</i>\n\n`;
+      buttons.push([
+        { text: `✅ Done #${t.id}`, callback_data: `tk:d:${t.id}` },
+        { text: `❌ Cancel #${t.id}`, callback_data: `tk:x:${t.id}` },
+      ]);
     }
-    alert += `รวม ${overdue.length} รายการค้าง\nใช้ /resolve <id> เพื่อปิดงาน`;
+    alert += `รวม ${overdue.length} รายการค้าง`;
 
-    await sendTelegram(env, bossId, alert, null);
+    await sendTelegramWithKeyboard(env, bossId, alert, null, buttons);
   } catch (err) {
     console.error("Proactive alert error:", err);
   }
@@ -4973,15 +4848,7 @@ async function summarizeAndCleanup(env) {
       }
     }
 
-    // 6. ลบ resolved commitments เก่ากว่า 30 วัน
-    const commitResult = await env.DB
-      .prepare(
-        `DELETE FROM commitments
-         WHERE status = 'resolved' AND resolved_at < datetime('now', '-30 days')`
-      )
-      .run();
-
-    // 7. Auto-delete completed tasks > 24 hours (smart archival)
+    // 6. Auto-delete completed tasks > 24 hours (smart archival)
     let tasksArchived = 0;
     let tasksDeleted = 0;
     const { results: doneTasks } = await env.DB.prepare(
@@ -5043,9 +4910,9 @@ async function summarizeAndCleanup(env) {
       `DELETE FROM summaries WHERE created_at < datetime('now', '-365 days')`
     ).run();
 
-    if (totalDeletedMessages > 0 || totalSummaries > 0 || totalDailySummaries > 0 || commitResult.meta.changes > 0 || tasksDeleted > 0) {
+    if (totalDeletedMessages > 0 || totalSummaries > 0 || totalDailySummaries > 0 || tasksDeleted > 0) {
       console.log(
-        `Cleanup done: ${totalDeletedMessages} msgs deleted, ${totalSummaries} weekly + ${totalDailySummaries} daily summaries, ${commitResult.meta.changes} commitments deleted, ${tasksDeleted} tasks deleted (${tasksArchived} archived)`
+        `Cleanup done: ${totalDeletedMessages} msgs deleted, ${totalSummaries} weekly + ${totalDailySummaries} daily summaries, ${tasksDeleted} tasks deleted (${tasksArchived} archived)`
       );
     }
   } catch (err) {
