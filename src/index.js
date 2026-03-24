@@ -259,6 +259,7 @@ export default {
           "📋 Recap": "/recap",
           "📝 Tasks": "/tasks",
           "📋 Summary": "/summary",
+          "🏢 Company": "/company",
         };
         const memberShortcutMap = {
           "📝 Tasks": "/tasks",

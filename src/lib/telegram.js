@@ -179,9 +179,8 @@ export async function sendReplyKeyboard(env, chatId) {
       text: "เลือกคำสั่งได้เลยค่ะนาย:",
       reply_markup: {
         keyboard: [
-          [{ text: "📝 Tasks" }, { text: "🧠 Memories" }],
-          [{ text: "📨 Send" }, { text: "📋 Recap" }],
-          [{ text: "🗑 Delete" }, env.DASHBOARD_URL ? { text: "📊 Dashboard", web_app: { url: env.DASHBOARD_URL } } : { text: "📋 Summary" }],
+          [{ text: "📝 Tasks" }, { text: "🧠 Memories" }, { text: "📋 Summary" }, { text: "📋 Recap" }],
+          [{ text: "📨 Send" }, { text: "🏢 Company" }, { text: "🗑 Delete" }, ...(env.DASHBOARD_URL ? [{ text: "📊 Dashboard", web_app: { url: env.DASHBOARD_URL } }] : [])],
         ],
         resize_keyboard: true,
         is_persistent: true,
