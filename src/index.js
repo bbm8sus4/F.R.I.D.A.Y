@@ -883,35 +883,38 @@ async function getSmartContext(db, chatId, isDM, userQuery) {
     }
   }
 
-  const todayStr = new Date(Date.now() + 7 * 3600000).toISOString().slice(0, 10);
-  const activeTasks = batchResults[2].results;
-  if (activeTasks.length > 0) {
-    context += "=== Tasks ที่ยังไม่เสร็จ ===\n";
-    context += activeTasks
-      .map(t => {
-        let line = `- Task #${t.id} (สร้าง: ${t.created_at}): "${t.description}"`;
-        if (t.due_on) {
-          if (t.due_on < todayStr) line += ` [🔴 เลยกำหนด: ${t.due_on}]`;
-          else line += ` [📅 กำหนด: ${t.due_on}]`;
-        }
-        return line;
-      })
-      .join("\n");
-    context += "\n\n";
-  }
+  // Tasks — เฉพาะ DM เท่านั้น ห้ามโชว์ในกลุ่ม
+  if (isDM) {
+    const todayStr = new Date(Date.now() + 7 * 3600000).toISOString().slice(0, 10);
+    const activeTasks = batchResults[2].results;
+    if (activeTasks.length > 0) {
+      context += "=== Tasks ที่ยังไม่เสร็จ ===\n";
+      context += activeTasks
+        .map(t => {
+          let line = `- Task #${t.id} (สร้าง: ${t.created_at}): "${t.description}"`;
+          if (t.due_on) {
+            if (t.due_on < todayStr) line += ` [🔴 เลยกำหนด: ${t.due_on}]`;
+            else line += ` [📅 กำหนด: ${t.due_on}]`;
+          }
+          return line;
+        })
+        .join("\n");
+      context += "\n\n";
+    }
 
-  const recentDone = batchResults[3].results;
-  if (recentDone.length > 0) {
-    context += "=== Tasks ที่เสร็จล่าสุด (24 ชม.) ===\n";
-    context += recentDone
-      .map(t => {
-        let line = `- Task #${t.id}: "${t.description}"`;
-        if (t.result) line += ` → "${t.result}"`;
-        line += ` (เสร็จ: ${t.completed_at})`;
-        return line;
-      })
-      .join("\n");
-    context += "\n\n";
+    const recentDone = batchResults[3].results;
+    if (recentDone.length > 0) {
+      context += "=== Tasks ที่เสร็จล่าสุด (24 ชม.) ===\n";
+      context += recentDone
+        .map(t => {
+          let line = `- Task #${t.id}: "${t.description}"`;
+          if (t.result) line += ` → "${t.result}"`;
+          line += ` (เสร็จ: ${t.completed_at})`;
+          return line;
+        })
+        .join("\n");
+      context += "\n\n";
+    }
   }
 
   // ===== Batch 2 — ดึงเมื่อมี keywords (1 round-trip) =====
