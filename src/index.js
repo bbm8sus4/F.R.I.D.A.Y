@@ -3878,12 +3878,14 @@ async function handleTaskCallback(env, callbackQuery) {
       }
 
       let text = "<b>📋 ประวัติ Tasks</b>\n\n";
+      const buttons = [];
       for (const t of results) {
         const icon = t.status === "done" ? "✅" : "❌";
         text += `${icon} <b>#${t.id}</b> ${escapeHtml(t.description)}\n`;
         if (t.result) text += `   ↳ ${escapeHtml(t.result)}\n`;
         if (t.due_on) text += `   📅 กำหนด: ${t.due_on}\n`;
         text += `   <i>${t.status === "done" ? "เสร็จ" : "ยกเลิก"}: ${t.completed_at}</i>\n\n`;
+        buttons.push([{ text: `↩️ Undo #${t.id}`, callback_data: `tk:u:${t.id}` }]);
       }
       text += `แสดง ${offset + 1}-${offset + results.length} จาก ${total} รายการ`;
 
@@ -3891,7 +3893,6 @@ async function handleTaskCallback(env, callbackQuery) {
       if (offset > 0) navButtons.push({ text: "◀️ ก่อนหน้า", callback_data: `tk:h:${offset - 10}` });
       if (offset + 10 < total) navButtons.push({ text: "▶️ ถัดไป", callback_data: `tk:h:${offset + 10}` });
 
-      const buttons = [];
       if (navButtons.length) buttons.push(navButtons);
       buttons.push([{ text: "🔙 กลับ Tasks", callback_data: "tk:b" }]);
 
@@ -3919,6 +3920,40 @@ async function handleTaskCallback(env, callbackQuery) {
           chat_id: chatId,
           message_id: messageId,
           text: sanitizeHtml(text),
+          parse_mode: "HTML",
+          reply_markup: { inline_keyboard: buttons },
+        }),
+      });
+      return;
+    }
+
+    // Undo — revert task back to pending
+    if (action === "u") {
+      const undoId = Number(parts[2]);
+      const task = await env.DB
+        .prepare(`SELECT id, description, status FROM tasks WHERE id = ? AND status IN ('done','cancelled')`)
+        .bind(undoId)
+        .first();
+
+      if (!task) {
+        await sendTelegram(env, chatId, `Task #${undoId} ไม่พบ หรือกลับไม่ได้แล้วค่ะ`, null);
+        return;
+      }
+
+      await env.DB
+        .prepare(`UPDATE tasks SET status='pending', completed_at=NULL, result=NULL WHERE id=?`)
+        .bind(undoId)
+        .run();
+
+      // Go back to tasks view showing the restored task
+      const { text, buttons } = await buildTasksDisplay(env);
+      await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/editMessageText`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          chat_id: chatId,
+          message_id: messageId,
+          text: sanitizeHtml(`↩️ Task #${undoId} กลับมาเป็นรอดำเนินการแล้วค่ะ — "${task.description}"\n\n` + text),
           parse_mode: "HTML",
           reply_markup: { inline_keyboard: buttons },
         }),
