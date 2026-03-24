@@ -531,6 +531,7 @@ export default {
           "🗑 Delete": "/delete",
           "📨 Send": "/send",
           "📋 Recap": "/recap",
+          "📝 Tasks": "/tasks",
         };
         if (shortcutMap[text]) text = shortcutMap[text];
       }
@@ -560,6 +561,10 @@ export default {
           "/recap": () => handleRecapCommand(env, message),
           "/delete": () => handleDeleteCommand(env, message),
           "/dashboard": () => handleDashboardCommand(env, message),
+          "/task": () => handleTaskCommand(env, message, parsed.args),
+          "/tasks": () => handleTasksCommand(env, message),
+          "/done": () => handleDoneCommand(env, message, parsed.args),
+          "/cancel": () => handleCancelCommand(env, message, parsed.args),
           "/menu": () => sendReplyKeyboard(env, message.chat.id),
           "/start": () => sendReplyKeyboard(env, message.chat.id),
         };
@@ -847,6 +852,11 @@ async function getSmartContext(db, chatId, isDM, userQuery) {
     `SELECT username, first_name, promise_text, datetime(created_at, '+7 hours') as created_at FROM commitments
      WHERE status = 'pending' ORDER BY created_at DESC LIMIT 20`
   );
+  const tasksStmt = db.prepare(
+    `SELECT id, description, status, datetime(created_at, '+7 hours') as created_at
+     FROM tasks WHERE status = 'pending'
+     ORDER BY created_at ASC LIMIT 5`
+  );
 
   let batchStmts;
   if (isDM) {
@@ -861,6 +871,7 @@ async function getSmartContext(db, chatId, isDM, userQuery) {
          ORDER BY created_at ASC
          LIMIT 100`
       ),
+      tasksStmt,
     ];
   } else {
     batchStmts = [
@@ -872,6 +883,7 @@ async function getSmartContext(db, chatId, isDM, userQuery) {
          WHERE chat_id = ? AND created_at > datetime('now', '-2 hours')
          ORDER BY created_at ASC LIMIT 100`
       ).bind(chatId),
+      tasksStmt,
     ];
   }
 
@@ -919,6 +931,15 @@ async function getSmartContext(db, chatId, isDM, userQuery) {
         const name = c.username ? `@${c.username}` : c.first_name || "Unknown";
         return `- ${name} (${c.created_at}): "${c.promise_text}"`;
       })
+      .join("\n");
+    context += "\n\n";
+  }
+
+  const activeTasks = batchResults[3].results;
+  if (activeTasks.length > 0) {
+    context += "=== Tasks ที่ยังไม่เสร็จ ===\n";
+    context += activeTasks
+      .map(t => `- Task #${t.id} (${t.created_at}): "${t.description}"`)
       .join("\n");
     context += "\n\n";
   }
@@ -1270,6 +1291,12 @@ async function askGemini(env, userMessage, context, imageData) {
    - ตัวอย่าง: บอสบอก "ลืมข้อ #5 ได้แล้ว" → [FORGET:5]
    - ยืนยันกับบอสว่าลบแล้ว
 
+4. อัปเดต Task: [TASK_DONE:id:result]
+   - เมื่อบอสพูดถึงว่าทำ task เสร็จ ให้ใช้ tag นี้
+   - id ดูจาก context "Tasks ที่ยังไม่เสร็จ"
+   - ตัวอย่าง: บอสบอก "slide ประชุมเสร็จแล้ว" + มี Task #5 → [TASK_DONE:5:เสร็จแล้ว slide ประชุม]
+   - ใช้ได้เมื่อมี task ที่ตรงกับสิ่งที่บอสพูดถึงเท่านั้น ห้ามเดา
+
 [Memory & Intelligence]
 ---
 ${context}
@@ -1383,6 +1410,10 @@ ${context}
 const ALLOWED_TAGS = new Set(["b", "i", "u", "s", "code", "pre", "blockquote", "a", "tg-spoiler", "tg-emoji"]);
 
 // sanitizeHtml: strip unsupported tags, auto-close unclosed tags
+function escapeHtml(str) {
+  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
 function sanitizeHtml(text) {
   // Step 1: Convert or strip unsupported tags
   text = text.replace(/<\/?([a-zA-Z][a-zA-Z0-9]*)\b[^>]*\/?>/g, (match, tagName) => {
@@ -1690,7 +1721,7 @@ async function sendReplyKeyboard(env, chatId) {
       text: "เลือกคำสั่งได้เลยค่ะนาย:",
       reply_markup: {
         keyboard: [
-          [{ text: "📋 Pending" }, { text: "🧠 Memories" }],
+          [{ text: "📋 Pending" }, { text: "🧠 Memories" }, { text: "📝 Tasks" }],
           [{ text: "📨 Send" }, { text: "📋 Recap" }],
           [{ text: "🗑 Delete" }, { text: "📊 Dashboard", web_app: { url: env.DASHBOARD_URL || "https://friday-dashboard-3rf.pages.dev" } }],
         ],
@@ -1734,8 +1765,22 @@ async function parseAndExecuteActions(env, reply) {
     actionsExecuted++;
   }
 
+  // 4. Execute TASK_DONE actions
+  const taskDoneRegex = /\[TASK_DONE:(\d+):([^\]]+)\]/g;
+  while ((match = taskDoneRegex.exec(reply)) !== null) {
+    const task = await env.DB
+      .prepare(`SELECT id FROM tasks WHERE id = ? AND status = 'pending'`)
+      .bind(Number(match[1])).first();
+    if (task) {
+      await env.DB
+        .prepare(`UPDATE tasks SET status='done', result=?, completed_at=datetime('now') WHERE id=?`)
+        .bind(match[2], Number(match[1])).run();
+    }
+    actionsExecuted++;
+  }
+
   // ตรวจว่ามี action tags ไหม (ก่อน strip) — รวม tag ที่ Gemini ใส่ชื่อกลุ่มแทน chat_id ด้วย
-  const hasActionTags = /\[(SEND|REMEMBER|FORGET):/.test(reply);
+  const hasActionTags = /\[(SEND|REMEMBER|FORGET|TASK_DONE):/.test(reply);
 
   // Strip all action tags from reply text (boss sees clean text)
   // SEND: match ทุกรูปแบบ (ทั้ง chat_id ตัวเลข และชื่อกลุ่ม)
@@ -1743,6 +1788,7 @@ async function parseAndExecuteActions(env, reply) {
     .replace(/\[SEND:[^\]]+\]/g, '')
     .replace(/\[REMEMBER:\w+:[^\]]+\]/g, '')
     .replace(/\[FORGET:\d+\]/g, '')
+    .replace(/\[TASK_DONE:\d+:[^\]]+\]/g, '')
     .trim();
 
   return { cleanReply, actionsExecuted, hasActionTags };
@@ -3747,6 +3793,107 @@ async function handleResolveCommand(env, message, args) {
   }
 }
 
+// ===== Task System — สั่ง → ทำ → จบ → ลบ =====
+
+async function handleTaskCommand(env, message, args) {
+  try {
+    const description = args.trim();
+    if (!description) {
+      await sendTelegram(env, message.chat.id, "Usage: /task <รายละเอียดงาน>\nตัวอย่าง: /task เตรียม slide ประชุม", message.message_id);
+      return;
+    }
+    const { meta } = await env.DB
+      .prepare(`INSERT INTO tasks (description) VALUES (?)`)
+      .bind(description)
+      .run();
+    await sendTelegram(env, message.chat.id, `📌 สร้าง Task #${meta.last_row_id} แล้วค่ะ\n"${description}"`, message.message_id);
+  } catch (err) {
+    console.error("handleTaskCommand error:", err);
+  }
+}
+
+async function handleTasksCommand(env, message) {
+  try {
+    const { results } = await env.DB
+      .prepare(
+        `SELECT id, description, status, result, datetime(created_at, '+7 hours') as created_at
+         FROM tasks WHERE status IN ('pending','done')
+         ORDER BY CASE status WHEN 'pending' THEN 0 ELSE 1 END, created_at ASC LIMIT 20`
+      )
+      .all();
+    if (results.length === 0) {
+      await sendTelegram(env, message.chat.id, "ไม่มี task ค้างอยู่เลยค่ะนาย 🎉", message.message_id);
+      return;
+    }
+    let text = "<b>📝 Tasks</b>\n\n";
+    for (const t of results) {
+      const icon = t.status === "pending" ? "⏳" : "✅";
+      text += `${icon} <b>#${t.id}</b> ${escapeHtml(t.description)}\n`;
+      if (t.result) text += `   ↳ ${escapeHtml(t.result)}\n`;
+      text += `   <i>${t.created_at}</i>\n\n`;
+    }
+    text += "สั่ง: /task &lt;งาน&gt;\nเสร็จ: /done &lt;id&gt; [ผลลัพธ์]\nยกเลิก: /cancel &lt;id&gt;";
+    await sendTelegram(env, message.chat.id, text, message.message_id, true);
+  } catch (err) {
+    console.error("handleTasksCommand error:", err);
+  }
+}
+
+async function handleDoneCommand(env, message, args) {
+  try {
+    const match = args.trim().match(/^(\d+)\s*([\s\S]*)/);
+    if (!match) {
+      await sendTelegram(env, message.chat.id, "Usage: /done <id> [ผลลัพธ์]\nตัวอย่าง: /done 1 ส่ง email ไปแล้ว", message.message_id);
+      return;
+    }
+    const taskId = Number(match[1]);
+    const result = match[2].trim() || null;
+    const task = await env.DB
+      .prepare(`SELECT id, description FROM tasks WHERE id = ? AND status = 'pending'`)
+      .bind(taskId)
+      .first();
+    if (!task) {
+      await sendTelegram(env, message.chat.id, `ไม่พบ Task #${taskId} ที่ยังค้างอยู่ค่ะ`, message.message_id);
+      return;
+    }
+    await env.DB
+      .prepare(`UPDATE tasks SET status='done', result=?, completed_at=datetime('now') WHERE id=?`)
+      .bind(result, taskId)
+      .run();
+    let msg = `✅ Task #${taskId} เสร็จแล้วค่ะ — "${task.description}"`;
+    if (result) msg += `\n↳ ${result}`;
+    msg += "\n(จะลบอัตโนมัติใน 24 ชม.)";
+    await sendTelegram(env, message.chat.id, msg, message.message_id);
+  } catch (err) {
+    console.error("handleDoneCommand error:", err);
+  }
+}
+
+async function handleCancelCommand(env, message, args) {
+  try {
+    const taskId = Number(args.trim());
+    if (!taskId) {
+      await sendTelegram(env, message.chat.id, "Usage: /cancel <id>", message.message_id);
+      return;
+    }
+    const task = await env.DB
+      .prepare(`SELECT id, description FROM tasks WHERE id = ? AND status = 'pending'`)
+      .bind(taskId)
+      .first();
+    if (!task) {
+      await sendTelegram(env, message.chat.id, `ไม่พบ Task #${taskId} ที่ยังค้างอยู่ค่ะ`, message.message_id);
+      return;
+    }
+    await env.DB
+      .prepare(`UPDATE tasks SET status='cancelled', completed_at=datetime('now') WHERE id=?`)
+      .bind(taskId)
+      .run();
+    await sendTelegram(env, message.chat.id, `❌ ยกเลิก Task #${taskId} แล้วค่ะ — "${task.description}"`, message.message_id);
+  } catch (err) {
+    console.error("handleCancelCommand error:", err);
+  }
+}
+
 async function handleRememberCommand(env, message, args) {
   try {
     let content = args.trim();
@@ -4834,7 +4981,35 @@ async function summarizeAndCleanup(env) {
       )
       .run();
 
-    // 7. นับ memories (เฉพาะ hot) → ถ้าเกิน 200 แจ้งเตือนบอส
+    // 7. Auto-delete completed tasks > 24 hours (smart archival)
+    let tasksArchived = 0;
+    let tasksDeleted = 0;
+    const { results: doneTasks } = await env.DB.prepare(
+      `SELECT id, description, result FROM tasks
+       WHERE status = 'done' AND completed_at < datetime('now', '-24 hours')
+         AND archived_to_memory_id IS NULL LIMIT 10`
+    ).all();
+
+    for (const task of doneTasks) {
+      if (task.result && task.result.length > 50) {
+        const { meta } = await env.DB.prepare(
+          `INSERT INTO memories (content, category, priority) VALUES (?, 'task_result', 'warm')`
+        ).bind(`[Task #${task.id}: ${task.description}] ${task.result}`).run();
+        await env.DB.prepare(
+          `UPDATE tasks SET archived_to_memory_id = ? WHERE id = ?`
+        ).bind(meta.last_row_id, task.id).run();
+        tasksArchived++;
+      }
+    }
+
+    const taskDeleteResult = await env.DB.prepare(
+      `DELETE FROM tasks
+       WHERE (status IN ('done','cancelled')) AND completed_at < datetime('now', '-24 hours')
+         AND (archived_to_memory_id IS NOT NULL OR result IS NULL OR LENGTH(result) <= 50)`
+    ).run();
+    tasksDeleted = taskDeleteResult.meta.changes;
+
+    // 8. นับ memories (เฉพาะ hot) → ถ้าเกิน 200 แจ้งเตือนบอส
     const { results: memCount } = await env.DB
       .prepare(`SELECT COUNT(*) as count FROM memories WHERE priority = 'hot'`)
       .all();
@@ -4868,9 +5043,9 @@ async function summarizeAndCleanup(env) {
       `DELETE FROM summaries WHERE created_at < datetime('now', '-365 days')`
     ).run();
 
-    if (totalDeletedMessages > 0 || totalSummaries > 0 || totalDailySummaries > 0 || commitResult.meta.changes > 0) {
+    if (totalDeletedMessages > 0 || totalSummaries > 0 || totalDailySummaries > 0 || commitResult.meta.changes > 0 || tasksDeleted > 0) {
       console.log(
-        `Cleanup done: ${totalDeletedMessages} msgs deleted, ${totalSummaries} weekly + ${totalDailySummaries} daily summaries, ${commitResult.meta.changes} commitments deleted`
+        `Cleanup done: ${totalDeletedMessages} msgs deleted, ${totalSummaries} weekly + ${totalDailySummaries} daily summaries, ${commitResult.meta.changes} commitments deleted, ${tasksDeleted} tasks deleted (${tasksArchived} archived)`
       );
     }
   } catch (err) {
