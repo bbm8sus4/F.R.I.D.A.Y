@@ -4,9 +4,15 @@
   "private": true,
   "scripts": {
     "dev": "wrangler dev",
+    "dev:daisy": "wrangler dev --env daisy",
     "deploy": "wrangler deploy",
+    "deploy:daisy": "wrangler deploy --env daisy",
+    "deploy:all": "wrangler deploy && wrangler deploy --env daisy",
     "db:migrate": "wrangler d1 migrations apply my-ai-bot-db",
+    "db:migrate:daisy": "wrangler d1 migrations apply daisy-ai-bot-db --env daisy",
+    "db:migrate:all": "wrangler d1 migrations apply my-ai-bot-db && wrangler d1 migrations apply daisy-ai-bot-db --env daisy",
     "db:migrate:local": "wrangler d1 migrations apply my-ai-bot-db --local",
-    "tail": "wrangler tail"
+    "tail": "wrangler tail",
+    "tail:daisy": "wrangler tail --env daisy"
   }
 }

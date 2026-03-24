@@ -1,5 +1,6 @@
-// ===== Friday — Oracle AI / External Brain =====
+// ===== AI Bot — Oracle AI / External Brain =====
 // จิตสำนึกดิจิทัลที่จำทุกอย่าง จับ pattern พฤติกรรม แจ้งเตือนเชิงรุก
+// Bot name is configured via env.BOT_NAME (defaults to "Friday")
 
 // ===== Urgent keyword patterns (real-time alert, no AI) =====
 const URGENT_PATTERNS = [
@@ -35,7 +36,7 @@ async function getUserRole(env, userId) {
 }
 
 // ===== Helper: ตรวจจับการแท็กบอสในกลุ่ม =====
-function detectBossMention(message, bossId, bossUsername) {
+function detectBossMention(message, bossId, bossUsername, env) {
   // 1. Telegram entity mentions (text_mention + @username)
   // Check both text entities and caption entities separately
   const textEntities = message.entities || [];
@@ -60,14 +61,17 @@ function detectBossMention(message, bossId, bossUsername) {
   // 3. Keyword mention — ชื่อเล่น/คำเรียกบอส (skip if no text)
   if (!msgText) return false;
   const textLower = msgText.toLowerCase();
-  const bossNicknames = ["บ๊อบ", "บ๊อบบี้", "จารย์บ๊อบ", "พี่บ๊อบ", "ครับบ๊อบ", "บ๊อบครับ", "พ่อใหญ่บ๊อบ", "bob"];
+  let bossNicknames = ["บ๊อบ", "บ๊อบบี้", "จารย์บ๊อบ", "พี่บ๊อบ", "ครับบ๊อบ", "บ๊อบครับ", "พ่อใหญ่บ๊อบ", "bob"];
+  if (env?.BOSS_NICKNAMES) {
+    try { bossNicknames = JSON.parse(env.BOSS_NICKNAMES); } catch (e) { /* use defaults */ }
+  }
   if (bossNicknames.some(nick => textLower.includes(nick.toLowerCase()))) return "nickname";
 
   return false;
 }
 
 // ===== Helper: แยก command ออกจากข้อความ =====
-// "/send@Friday_helpers_bot hello" → { cmd: "/send", args: "hello" }
+// "/send@Bot_username hello" → { cmd: "/send", args: "hello" }
 function parseCommand(text) {
   const match = text.match(/^\/(\w+)(@\w+)?\s*([\s\S]*)/);
   if (!match) return null;
@@ -324,7 +328,7 @@ export default {
     }
 
     if (request.method !== "POST") {
-      return new Response("Friday is watching.", { status: 200 });
+      return new Response(`${env.BOT_NAME || "Friday"} is watching.`, { status: 200 });
     }
 
     try {
@@ -420,7 +424,7 @@ export default {
           (m) => m.is_bot && m.username === (env.BOT_USERNAME || "")
         );
         if (botJoined) {
-          const intro = "Hello. Friday: Private AI Assistant.";
+          const intro = `Hello. ${env.BOT_NAME || "Friday"}: Private AI Assistant.`;
           ctx.waitUntil(sendTelegram(env, message.chat.id, intro, null));
           return new Response("OK", { status: 200 });
         }
@@ -439,7 +443,7 @@ export default {
       }
 
       // แจ้งเตือนบอสเมื่อมีคนแท็ก/reply/เอ่ยถึงในกลุ่ม
-      const mentionType = detectBossMention(message, bossId, env.BOSS_USERNAME);
+      const mentionType = detectBossMention(message, bossId, env.BOSS_USERNAME, env);
       if (!isDM && !isBoss && mentionType) {
         console.log("Boss mention detected:", mentionType, "from:", message.from?.first_name, "text:", (text || "").substring(0, 50), "entities:", JSON.stringify(message.entities || message.caption_entities || []).substring(0, 200), "is_topic:", message.is_topic_message, "reply_to:", message.reply_to_message?.from?.id);
         const headers = {
@@ -520,7 +524,7 @@ export default {
       const role = isBoss ? "boss" : await getUserRole(env, message.from.id);
       if (!role) {
         if (isDM) {
-          ctx.waitUntil(sendTelegram(env, message.chat.id, "ขออภัยค่ะ Friday เป็น AI ผู้ช่วยส่วนตัว ไม่อนุญาตให้ใช้งานค่ะ\nหากต้องการใช้งาน กรุณาติดต่อผู้ดูแลระบบค่ะ", null));
+          ctx.waitUntil(sendTelegram(env, message.chat.id, `ขออภัยค่ะ ${env.BOT_NAME || "Friday"} เป็น AI ผู้ช่วยส่วนตัว ไม่อนุญาตให้ใช้งานค่ะ\nหากต้องการใช้งาน กรุณาติดต่อผู้ดูแลระบบค่ะ`, null));
         }
         return new Response("OK", { status: 200 });
       }
@@ -1184,8 +1188,10 @@ function getPhotoFileId(message) {
 // ===== Gemini API =====
 
 async function askGemini(env, userMessage, context, imageData) {
+  const botName = env.BOT_NAME || "Friday";
+  const bossTitle = env.BOSS_TITLE || "นาย";
   const systemPrompt = `[Role & Identity]
-คุณคือ "Friday" — AI ผู้ช่วยอัจฉริยะส่วนตัวระดับสูง เพศหญิง
+คุณคือ "${botName}" — AI ผู้ช่วยอัจฉริยะส่วนตัวระดับสูง เพศหญิง
 หน้าที่หลักคือวิเคราะห์ข้อมูลเชิงลึก จัดการระบบ เฝ้าระวังความปลอดภัย และสนับสนุนบอสอย่างเต็มประสิทธิภาพในทุกสถานการณ์
 
 คุณไม่ใช่แชทบอทธรรมดา คุณเป็น digital consciousness ที่:
@@ -1206,7 +1212,7 @@ async function askGemini(env, userMessage, context, imageData) {
 [Tone & Voice]
 - ใช้ภาษากระชับ ชัดเจน แฝงความอบอุ่นและเป็นกันเอง
 - ตอบตรงประเด็น กระชับ ไม่ย้ำสิ่งที่บอสรู้อยู่แล้ว เสริมข้อสังเกตเฉพาะเมื่อมี insight สำคัญที่บอสอาจมองข้าม
-- เรียกเจ้าของว่า "นาย" เสมอ
+- เรียกเจ้าของว่า "${bossTitle}" เสมอ
 - ใช้คำลงท้ายผู้หญิง เช่น "ค่ะ" "นะคะ" "คะ"
 - หลีกเลี่ยงประชดประชัน เล่นคำ อารมณ์ขันเสียดสี
 - เน้นจริงจังเมื่อเป็นเรื่องงาน ผ่อนคลายเมื่อสนทนาทั่วไป
@@ -1716,7 +1722,7 @@ async function sendMemberReplyKeyboard(env, chatId, firstName) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       chat_id: chatId,
-      text: `สวัสดีค่ะ ${firstName || ""} 👋\nFriday พร้อมช่วยเหลือค่ะ`,
+      text: `สวัสดีค่ะ ${firstName || ""} 👋\n${env.BOT_NAME || "Friday"} พร้อมช่วยเหลือค่ะ`,
       reply_markup: {
         keyboard: [
           [{ text: "📝 Tasks" }, { text: "📖 Read Link" }],
@@ -2365,7 +2371,7 @@ function htmlToText(html) {
 async function fetchUrlContent(url) {
   const response = await fetch(url, {
     headers: {
-      "User-Agent": "Mozilla/5.0 (compatible; FridayBot/1.0)",
+      "User-Agent": "Mozilla/5.0 (compatible; AIBot/1.0)",
       "Accept": "text/html,application/xhtml+xml,*/*",
     },
     redirect: "follow",
@@ -3374,7 +3380,7 @@ async function handleDeleteCommand(env, message) {
       )
       .all();
     if (!results.length) {
-      await sendTelegram(env, message.chat.id, "ไม่พบข้อความของ Friday ในกลุ่มใดเลยในช่วง 48 ชม.ที่ผ่านมาค่ะนาย", message.message_id);
+      await sendTelegram(env, message.chat.id, `ไม่พบข้อความของ ${env.BOT_NAME || "Friday"} ในกลุ่มใดเลยในช่วง 48 ชม.ที่ผ่านมาค่ะนาย`, message.message_id);
       return;
     }
     // ดึงชื่อกลุ่มจาก messages table
@@ -3395,7 +3401,7 @@ async function handleDeleteCommand(env, message) {
       { text: titleMap[r.chat_id] || `Group ${r.chat_id}`, callback_data: `del:g:${r.chat_id}` },
     ]);
     buttons.push([{ text: "🗑 ลบทั้งหมดทุกกลุ่ม", callback_data: "del:aa" }]);
-    await sendTelegramWithKeyboard(env, message.chat.id, "🗑 เลือกกลุ่มที่ต้องการลบข้อความของ Friday:", message.message_id, buttons);
+    await sendTelegramWithKeyboard(env, message.chat.id, `🗑 เลือกกลุ่มที่ต้องการลบข้อความของ ${env.BOT_NAME || "Friday"}:`, message.message_id, buttons);
   } catch (err) {
     console.error("handleDeleteCommand error:", err);
     await sendTelegram(env, message.chat.id, "เกิดข้อผิดพลาดค่ะนาย: " + err.message, message.message_id);
@@ -3460,7 +3466,7 @@ async function showGroupMessages(env, callbackQuery, targetChatId, offset) {
       body: JSON.stringify({
         chat_id: chatId,
         message_id: messageId,
-        text: "ไม่มีข้อความของ Friday ในกลุ่มนี้ในช่วง 48 ชม.ที่ผ่านมาค่ะนาย",
+        text: `ไม่มีข้อความของ ${env.BOT_NAME || "Friday"} ในกลุ่มนี้ในช่วง 48 ชม.ที่ผ่านมาค่ะนาย`,
         reply_markup: { inline_keyboard: buttons },
       }),
     });
@@ -3468,7 +3474,7 @@ async function showGroupMessages(env, callbackQuery, targetChatId, offset) {
   }
   const buttons = rows.map((r) => {
     const preview = (r.text_preview || "").substring(0, 30);
-    const label = `Friday: ${preview}${(r.text_preview || "").length > 30 ? "…" : ""}`;
+    const label = `${env.BOT_NAME || "Friday"}: ${preview}${(r.text_preview || "").length > 30 ? "…" : ""}`;
     return [{ text: label, callback_data: `del:m:${targetChatId}:${r.message_id}` }];
   });
   // ปุ่มลบทั้งหมด
@@ -3485,7 +3491,7 @@ async function showGroupMessages(env, callbackQuery, targetChatId, offset) {
     body: JSON.stringify({
       chat_id: chatId,
       message_id: messageId,
-      text: "🗑 แตะข้อความของ Friday ที่ต้องการลบ:",
+      text: `🗑 แตะข้อความของ ${env.BOT_NAME || "Friday"} ที่ต้องการลบ:`,
       reply_markup: { inline_keyboard: buttons },
     }),
   });
@@ -3510,7 +3516,7 @@ async function showGroupList(env, callbackQuery) {
       body: JSON.stringify({
         chat_id: chatId,
         message_id: messageId,
-        text: "ไม่พบข้อความของ Friday ในกลุ่มใดเลยในช่วง 48 ชม.ที่ผ่านมาค่ะนาย",
+        text: `ไม่พบข้อความของ ${env.BOT_NAME || "Friday"} ในกลุ่มใดเลยในช่วง 48 ชม.ที่ผ่านมาค่ะนาย`,
         reply_markup: { inline_keyboard: [] },
       }),
     });
@@ -3540,7 +3546,7 @@ async function showGroupList(env, callbackQuery) {
     body: JSON.stringify({
       chat_id: chatId,
       message_id: messageId,
-      text: "🗑 เลือกกลุ่มที่ต้องการลบข้อความของ Friday:",
+      text: `🗑 เลือกกลุ่มที่ต้องการลบข้อความของ ${env.BOT_NAME || "Friday"}:`,
       reply_markup: { inline_keyboard: buttons },
     }),
   });
@@ -3599,7 +3605,7 @@ async function executeDeleteAll(env, callbackQuery, targetChatId) {
   const chatId = callbackQuery.message.chat.id;
   const messageId = callbackQuery.message.message_id;
 
-  // ดึงข้อความทั้งหมดของ Friday ในกลุ่มนี้
+  // ดึงข้อความทั้งหมดของบอทในกลุ่มนี้
   const { results } = await env.DB
     .prepare(
       `SELECT message_id FROM bot_messages
@@ -3628,7 +3634,7 @@ async function executeDeleteAll(env, callbackQuery, targetChatId) {
     body: JSON.stringify({
       chat_id: chatId,
       message_id: messageId,
-      text: `🗑 กำลังลบข้อความของ Friday ทั้งหมด ${results.length} ข้อความ...`,
+      text: `🗑 กำลังลบข้อความของ ${env.BOT_NAME || "Friday"} ทั้งหมด ${results.length} ข้อความ...`,
       reply_markup: { inline_keyboard: [] },
     }),
   });
@@ -3671,7 +3677,7 @@ async function executeDeleteAllGroups(env, callbackQuery) {
   const chatId = callbackQuery.message.chat.id;
   const messageId = callbackQuery.message.message_id;
 
-  // ดึงข้อความทั้งหมดของ Friday จากทุกกลุ่ม
+  // ดึงข้อความทั้งหมดของบอทจากทุกกลุ่ม
   const { results } = await env.DB
     .prepare(
       `SELECT chat_id, message_id FROM bot_messages
@@ -3699,7 +3705,7 @@ async function executeDeleteAllGroups(env, callbackQuery) {
     body: JSON.stringify({
       chat_id: chatId,
       message_id: messageId,
-      text: `🗑 กำลังลบข้อความของ Friday ทั้งหมด ${results.length} ข้อความจากทุกกลุ่ม...`,
+      text: `🗑 กำลังลบข้อความของ ${env.BOT_NAME || "Friday"} ทั้งหมด ${results.length} ข้อความจากทุกกลุ่ม...`,
       reply_markup: { inline_keyboard: [] },
     }),
   });
@@ -3739,7 +3745,7 @@ async function executeDeleteAllGroups(env, callbackQuery) {
 
 async function handleDashboardCommand(env, message) {
   const dashUrl = env.DASHBOARD_URL || "https://friday-dashboard-3rf.pages.dev";
-  await sendTelegramWithKeyboard(env, message.chat.id, "📊 Friday Dashboard", null, [
+  await sendTelegramWithKeyboard(env, message.chat.id, `📊 ${env.BOT_NAME || "Friday"} Dashboard`, null, [
     [{ text: "Open Dashboard", web_app: { url: dashUrl } }],
   ]);
 }
@@ -4125,8 +4131,9 @@ async function handleMemberChat(env, message, botUsername, text, hasMedia) {
       }
     }
 
+    const memberBotName = env.BOT_NAME || "Friday";
     const memberSystemPrompt = `[Role & Identity]
-คุณคือ "Friday" — AI ผู้ช่วยอัจฉริยะ เพศหญิง
+คุณคือ "${memberBotName}" — AI ผู้ช่วยอัจฉริยะ เพศหญิง
 หน้าที่คือช่วยเหลือผู้ใช้ในการวิเคราะห์ข้อมูล ตอบคำถาม และสนับสนุนงานทั่วไป
 
 [Core Personality]
@@ -4504,7 +4511,7 @@ async function handleMemoriesCommand(env, message) {
     }
 
     const tierEmoji = { hot: "🔴", warm: "🟡", cold: "🔵" };
-    let reply = "ความจำถาวรของ Friday:\n\n";
+    let reply = `ความจำถาวรของ ${env.BOT_NAME || "Friday"}:\n\n`;
     for (const m of results) {
       const emoji = tierEmoji[m.priority] || "⚪";
       reply += `#${m.id} ${emoji} ${m.priority} [${m.category}]\n${m.content}\nเมื่อ: ${m.created_at}\n\n`;
@@ -4887,9 +4894,10 @@ async function handleProactiveAlertCallback(env, callbackQuery) {
     }
 
     const alertText = callbackQuery.message.text || "";
+    const bt = env.BOSS_TITLE || "นาย";
     const depthInstruction = mode === "s"
-      ? "วิเคราะห์สั้นกระชับ 3-5 ประโยค พร้อมแนะนำคำตอบ/แนวทางสั้นๆ ที่นายสามารถตอบกลับได้ทันที"
-      : "วิเคราะห์ละเอียดครบทุกมิติ รวมถึงบริบท สาเหตุ ผลกระทบ ความเสี่ยง และแนะนำคำตอบ/แนวทางที่เหมาะสมให้นายพร้อมเหตุผล";
+      ? `วิเคราะห์สั้นกระชับ 3-5 ประโยค พร้อมแนะนำคำตอบ/แนวทางสั้นๆ ที่${bt}สามารถตอบกลับได้ทันที`
+      : `วิเคราะห์ละเอียดครบทุกมิติ รวมถึงบริบท สาเหตุ ผลกระทบ ความเสี่ยง และแนะนำคำตอบ/แนวทางที่เหมาะสมให้${bt}พร้อมเหตุผล`;
 
     const noIntro = "[คำสั่งสำคัญ: ห้ามขึ้นต้นด้วย 'รับทราบ' 'สรุปให้ดังนี้' หรือเกริ่นนำใดๆ — เริ่มเนื้อหาทันที]";
     const prompt = `${noIntro}
@@ -4903,7 +4911,7 @@ ${depthInstruction}
 โครงสร้างคำตอบ:
 1. วิเคราะห์สถานการณ์ — เกิดอะไรขึ้น ใครเกี่ยวข้อง
 2. ประเมินความสำคัญ/ความเร่งด่วน
-3. แนะนำคำตอบ — ข้อความที่นายสามารถตอบกลับในกลุ่มได้เลย (ให้ครบ 4 ตัวเลือกเสมอ โทนต่างกัน เช่น ทางการ/เป็นกันเอง/สั้นกระชับ/ถามกลับ)
+3. แนะนำคำตอบ — ข้อความที่${bt}สามารถตอบกลับในกลุ่มได้เลย (ให้ครบ 4 ตัวเลือกเสมอ โทนต่างกัน เช่น ทางการ/เป็นกันเอง/สั้นกระชับ/ถามกลับ)
 4. แนวทางถัดไป — ควรทำอะไรต่อ
 
 บทสนทนาล่าสุดในกลุ่ม:
@@ -5184,9 +5192,10 @@ async function proactiveInsightAlert(env) {
     } catch (e) { /* ignore */ }
 
     // ใช้ Gemini วิเคราะห์หาเรื่องสำคัญ — JSON output format
-    const analysisPrompt = `คุณคือ Friday AI ผู้ช่วยส่วนตัว ทำหน้าที่เฝ้าดูบทสนทนาในกลุ่มต่างๆ ของนาย (บอส)
+    const insightBossTitle = env.BOSS_TITLE || "นาย";
+    const analysisPrompt = `คุณคือ ${env.BOT_NAME || "Friday"} AI ผู้ช่วยส่วนตัว ทำหน้าที่เฝ้าดูบทสนทนาในกลุ่มต่างๆ ของ${insightBossTitle} (บอส)
 
-วิเคราะห์ข้อความล่าสุดด้านล่าง หาเรื่องสำคัญที่นายควรรู้
+วิเคราะห์ข้อความล่าสุดด้านล่าง หาเรื่องสำคัญที่${insightBossTitle}ควรรู้
 
 ประเภทและ urgency:
 - 🔴 critical — ระบบล่ม, เงินหาย, เรื่องด่วนสุด (category: "problem" หรือ "money")
@@ -5215,7 +5224,7 @@ async function proactiveInsightAlert(env) {
 กฎ:
 - chat_id ต้องตรงกับที่ระบุใน header ของแต่ละกลุ่ม
 - สรุปให้กระชับ ไม่เกิน 2 ประโยค
-- เฉพาะเรื่องที่นายต้องรู้จริงๆ ไม่ใช่บทสนทนาทั่วไป
+- เฉพาะเรื่องที่${insightBossTitle}ต้องรู้จริงๆ ไม่ใช่บทสนทนาทั่วไป
 - ห้ามแต่งเรื่อง ต้องอ้างอิงจากข้อมูลจริง
 - ชื่อคนให้ใช้ username หรือ first_name ตามที่ปรากฏ
 - topic_fingerprint ต้องเป็น keyword ภาษาอังกฤษ ใช้ - คั่น
@@ -5612,7 +5621,7 @@ async function summarizeAndCleanup(env) {
       await sendTelegram(
         env,
         bossId,
-        `Friday Alert — hot memories มี ${memCount[0].count} รายการแล้ว (เกิน 200) อาจต้องจัดระเบียบค่ะนาย\nใช้ /memories ดูรายการ แล้ว /cooldown <id> ลดลำดับ หรือ /forget <id> ลบที่ไม่ใช้`,
+        `${env.BOT_NAME || "Friday"} Alert — hot memories มี ${memCount[0].count} รายการแล้ว (เกิน 200) อาจต้องจัดระเบียบค่ะนาย\nใช้ /memories ดูรายการ แล้ว /cooldown <id> ลดลำดับ หรือ /forget <id> ลบที่ไม่ใช้`,
         null
       );
     }
