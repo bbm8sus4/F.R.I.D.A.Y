@@ -107,11 +107,12 @@ export async function handleSummaryCommand(env, message, args) {
         return;
       }
 
+      const searchMaxLen = maxTextPerEntry(results.length);
       let reply = `🔍 ค้นหา summary: "${keyword}" (${results.length} รายการ)\n\n`;
       for (const s of results) {
         const typeLabel = s.summary_type === "daily" ? "📅" : "📆";
         reply += `${typeLabel} ${s.summary_date} | ${s.chat_title} (${s.message_count} msg)\n`;
-        reply += s.summary_text.substring(0, 300) + (s.summary_text.length > 300 ? "..." : "") + "\n\n";
+        reply += truncate(s.summary_text, searchMaxLen) + "\n\n";
       }
       await sendTelegram(env, chatId, reply.trim(), message.message_id);
     } else if (isDM && !parseInt(parts[0])) {
@@ -286,6 +287,18 @@ export function summaryDayButtons(activeDays, groupChatId) {
   }))];
 }
 
+// Dynamic truncation: allocate text budget per entry based on count
+// Telegram limit = 4096, reserve ~200 for header/buttons, ~100 per entry for metadata line
+function maxTextPerEntry(count) {
+  if (count <= 0) return 800;
+  const available = 3800 - (count * 80); // header overhead per entry
+  return Math.max(200, Math.min(1500, Math.floor(available / count)));
+}
+
+function truncate(text, limit) {
+  return text.length > limit ? text.substring(0, limit) + "..." : text;
+}
+
 // --- Build Summary Listing ---
 
 export async function buildSummaryListing(env, chatId, isDM, days, companyFilter) {
@@ -338,6 +351,7 @@ export async function buildSummaryListing(env, chatId, isDM, days, companyFilter
       return { text: `📋 "${companyName}" — ไม่มี summary ใน ${days} วันที่ผ่านมาค่ะนาย`, buttons };
     }
 
+    const maxLen = maxTextPerEntry(results.length);
     let reply = `📋 Summary "${companyName}" (${days} วันล่าสุด): ${results.length} รายการ\n\n`;
     if (companyFilter === "all") {
       let currentCompany = undefined;
@@ -349,13 +363,13 @@ export async function buildSummaryListing(env, chatId, isDM, days, companyFilter
         }
         const typeLabel = s.summary_type === "daily" ? "📅" : "📆";
         reply += `${typeLabel} ${s.summary_date} | ${s.chat_title} (${s.message_count} msg)\n`;
-        reply += s.summary_text.substring(0, 300) + (s.summary_text.length > 300 ? "..." : "") + "\n\n";
+        reply += truncate(s.summary_text, maxLen) + "\n\n";
       }
     } else {
       for (const s of results) {
         const typeLabel = s.summary_type === "daily" ? "📅" : "📆";
         reply += `${typeLabel} ${s.summary_date} | ${s.chat_title} (${s.message_count} msg)\n`;
-        reply += s.summary_text.substring(0, 300) + (s.summary_text.length > 300 ? "..." : "") + "\n\n";
+        reply += truncate(s.summary_text, maxLen) + "\n\n";
       }
     }
     return { text: reply.trim(), buttons };
@@ -382,11 +396,12 @@ export async function buildSummaryListing(env, chatId, isDM, days, companyFilter
     return { text: `ไม่มี summary ใน ${days} วันที่ผ่านมาค่ะนาย`, buttons: summaryDayButtons(days, groupChatId) };
   }
 
+  const maxLen = maxTextPerEntry(results.length);
   let reply = `📋 Summaries (${days} วันล่าสุด): ${results.length} รายการ\n\n`;
   for (const s of results) {
     const typeLabel = s.summary_type === "daily" ? "📅" : "📆";
     reply += `${typeLabel} ${s.summary_date} | ${s.chat_title} (${s.message_count} msg)\n`;
-    reply += s.summary_text.substring(0, 300) + (s.summary_text.length > 300 ? "..." : "") + "\n\n";
+    reply += truncate(s.summary_text, maxLen) + "\n\n";
   }
   return { text: reply.trim(), buttons: summaryDayButtons(days, groupChatId) };
 }
