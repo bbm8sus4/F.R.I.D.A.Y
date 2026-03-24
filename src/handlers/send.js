@@ -1,4 +1,4 @@
-import { sendTelegram, sendTelegramWithKeyboard, sendTyping, trackBotMessage } from "../lib/telegram.js";
+import { sendTelegram, sendTelegramWithKeyboard, sendTyping, trackBotMessage, getReplyKeyboardMarkup } from "../lib/telegram.js";
 import { askGemini } from "../lib/gemini.js";
 import { getSmartContext } from "../lib/context.js";
 import { stripHtmlTags } from "../lib/html-utils.js";
@@ -52,16 +52,7 @@ export async function handleSendCallback(env, callbackQuery) {
   const action = parts[1]; // "g"
   const targetChatId = parts.slice(2).join(":"); // handle negative chat IDs
 
-  const dashBtn = env.DASHBOARD_URL ? { text: "📊 Dashboard", web_app: { url: env.DASHBOARD_URL } } : { text: "📋 Summary" };
-  const REPLY_KB = {
-    keyboard: [
-      [{ text: "📝 Tasks" }, { text: "🧠 Memories" }],
-      [{ text: "📨 Send" }, { text: "📋 Recap" }],
-      [{ text: "🗑 Delete" }, dashBtn],
-    ],
-    resize_keyboard: true,
-    is_persistent: true,
-  };
+  const REPLY_KB = getReplyKeyboardMarkup(env);
 
   if (action === "a") {
     // Approve: extract message from preview and send to group

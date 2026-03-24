@@ -60,6 +60,17 @@ export async function trackBotMessage(env, chatId, messageId, textPreview) {
   } catch (e) { /* ignore */ }
 }
 
+export function getReplyKeyboardMarkup(env) {
+  return {
+    keyboard: [
+      [{ text: "📝 Tasks" }, { text: "🧠 Memories" }, { text: "📋 Summary" }, { text: "📋 Recap" }],
+      [{ text: "📨 Send" }, { text: "🏢 Company" }, { text: "🗑 Delete" }, ...(env.DASHBOARD_URL ? [{ text: "📊 Dashboard", web_app: { url: env.DASHBOARD_URL } }] : [])],
+    ],
+    resize_keyboard: true,
+    is_persistent: true,
+  };
+}
+
 export async function sendTelegram(env, chatId, text, replyToMessageId, useHtml = false) {
   const url = `https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`;
 
@@ -71,6 +82,7 @@ export async function sendTelegram(env, chatId, text, replyToMessageId, useHtml 
     link_preview_options: { is_disabled: true },
   };
   if (useHtml) baseBody.parse_mode = "HTML";
+  if (env._replyKeyboard) baseBody.reply_markup = env._replyKeyboard;
 
   // Helper: parse response and track bot message
   const trackRes = async (res, preview) => {
@@ -177,14 +189,7 @@ export async function sendReplyKeyboard(env, chatId) {
     body: JSON.stringify({
       chat_id: chatId,
       text: "เลือกคำสั่งได้เลยค่ะนาย:",
-      reply_markup: {
-        keyboard: [
-          [{ text: "📝 Tasks" }, { text: "🧠 Memories" }, { text: "📋 Summary" }, { text: "📋 Recap" }],
-          [{ text: "📨 Send" }, { text: "🏢 Company" }, { text: "🗑 Delete" }, ...(env.DASHBOARD_URL ? [{ text: "📊 Dashboard", web_app: { url: env.DASHBOARD_URL } }] : [])],
-        ],
-        resize_keyboard: true,
-        is_persistent: true,
-      },
+      reply_markup: getReplyKeyboardMarkup(env),
     }),
   });
 }

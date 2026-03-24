@@ -4,7 +4,7 @@
 
 // === Lib imports ===
 import { URGENT_PATTERNS, MEMBER_COMMANDS, MEMBER_CALLBACKS } from './lib/constants.js';
-import { sendTelegram, sendTelegramWithKeyboard, sendReplyKeyboard, sendMemberReplyKeyboard } from './lib/telegram.js';
+import { sendTelegram, sendTelegramWithKeyboard, sendReplyKeyboard, sendMemberReplyKeyboard, getReplyKeyboardMarkup } from './lib/telegram.js';
 import { getUserRole, detectBossMention, parseCommand } from './lib/auth.js';
 import { storeMessage } from './lib/context.js';
 
@@ -269,7 +269,10 @@ export default {
           "📋 Summary": "/summary",
         };
         const shortcutMap = role === "boss" ? bossShortcutMap : memberShortcutMap;
-        if (shortcutMap[text]) text = shortcutMap[text];
+        if (shortcutMap[text]) {
+          text = shortcutMap[text];
+          env._replyKeyboard = getReplyKeyboardMarkup(env);
+        }
       }
 
       // Commands — role-based access
