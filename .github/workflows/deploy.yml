@@ -13,6 +13,9 @@ jobs:
         with:
           node-version: "20"
       - run: npm install
+      - name: Syntax check all JS modules
+        run: |
+          for f in $(find src -name '*.js'); do node -c "$f"; done
       - name: Migrate Friday DB
         run: npx wrangler d1 migrations apply my-ai-bot-db --remote
         env:
