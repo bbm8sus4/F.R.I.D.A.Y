@@ -3667,6 +3667,13 @@ async function handleDashboardCommand(env, message) {
 
 // ===== Task System — สั่ง → ทำ → จบ → ลบ =====
 
+function truncateDesc(desc, maxLen = 60) {
+  if (!desc) return "";
+  const firstLine = desc.split('\n')[0];
+  if (firstLine.length <= maxLen) return firstLine;
+  return firstLine.slice(0, maxLen) + '…';
+}
+
 async function handleTaskCommand(env, message, args) {
   try {
     const description = args.trim();
@@ -3730,7 +3737,7 @@ async function buildTasksDisplay(env) {
     text += "<b>🔴 เกินกำหนด:</b>\n";
     for (const t of overdue) {
       const daysOver = Math.floor((new Date(todayStr) - new Date(t.due_on)) / 86400000);
-      text += `  ⚠️ <b>#${t.id}</b> ${escapeHtml(t.description)}\n`;
+      text += `  ⚠️ <b>#${t.id}</b> ${escapeHtml(truncateDesc(t.description))}\n`;
       text += `     📅 กำหนด: ${t.due_on} (เลย ${daysOver} วัน)\n`;
       buttons.push([
         { text: `✅ Done #${t.id}`, callback_data: `tk:d:${t.id}` },
@@ -3743,7 +3750,7 @@ async function buildTasksDisplay(env) {
   if (pending.length > 0) {
     text += "<b>⏳ รอดำเนินการ:</b>\n";
     for (const t of pending) {
-      text += `  ⏳ <b>#${t.id}</b> ${escapeHtml(t.description)}\n`;
+      text += `  ⏳ <b>#${t.id}</b> ${escapeHtml(truncateDesc(t.description))}\n`;
       if (t.due_on) text += `     📅 กำหนด: ${t.due_on}\n`;
       buttons.push([
         { text: `✅ Done #${t.id}`, callback_data: `tk:d:${t.id}` },
@@ -3757,10 +3764,11 @@ async function buildTasksDisplay(env) {
     text += "<b>✅ เสร็จล่าสุด:</b>\n";
     for (const t of done) {
       const icon = t.status === "done" ? "✅" : "❌";
-      text += `  ${icon} <b>#${t.id}</b> ${escapeHtml(t.description)}`;
-      if (t.result) text += ` — "${escapeHtml(t.result)}"`;
+      text += `  ${icon} <b>#${t.id}</b> ${escapeHtml(truncateDesc(t.description))}`;
+      if (t.result) text += ` — "${escapeHtml(truncateDesc(t.result))}"`;
       text += "\n";
       if (t.completed_at) text += `     <i>${t.status === "done" ? "เสร็จ" : "ยกเลิก"}: ${t.completed_at}</i>\n`;
+      buttons.push([{ text: `🗑 ลบ #${t.id}`, callback_data: `tk:del:${t.id}` }]);
     }
     text += "\n";
   }
@@ -3842,7 +3850,7 @@ async function handleTaskCallback(env, callbackQuery) {
   const chatId = callbackQuery.message.chat.id;
   const messageId = callbackQuery.message.message_id;
   const parts = callbackQuery.data.split(":");
-  const action = parts[1]; // "d" (done), "x" (cancel), "h" (history), "b" (back), "u" (undo)
+  const action = parts[1]; // "d" (done), "x" (cancel), "h" (history), "b" (back), "u" (undo), "del" (delete)
 
   // Answer callback immediately
   await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/answerCallbackQuery`, {
@@ -3885,11 +3893,14 @@ async function handleTaskCallback(env, callbackQuery) {
       const buttons = [];
       for (const t of results) {
         const icon = t.status === "done" ? "✅" : "❌";
-        text += `${icon} <b>#${t.id}</b> ${escapeHtml(t.description)}\n`;
-        if (t.result) text += `   ↳ ${escapeHtml(t.result)}\n`;
+        text += `${icon} <b>#${t.id}</b> ${escapeHtml(truncateDesc(t.description))}\n`;
+        if (t.result) text += `   ↳ ${escapeHtml(truncateDesc(t.result))}\n`;
         if (t.due_on) text += `   📅 กำหนด: ${t.due_on}\n`;
         text += `   <i>${t.status === "done" ? "เสร็จ" : "ยกเลิก"}: ${t.completed_at}</i>\n\n`;
-        buttons.push([{ text: `↩️ Undo #${t.id}`, callback_data: `tk:u:${t.id}` }]);
+        buttons.push([
+          { text: `↩️ Undo #${t.id}`, callback_data: `tk:u:${t.id}` },
+          { text: `🗑 ลบ #${t.id}`, callback_data: `tk:del:${t.id}` },
+        ]);
       }
       text += `แสดง ${offset + 1}-${offset + results.length} จาก ${total} รายการ`;
 
@@ -3957,11 +3968,91 @@ async function handleTaskCallback(env, callbackQuery) {
         body: JSON.stringify({
           chat_id: chatId,
           message_id: messageId,
-          text: sanitizeHtml(`↩️ Task #${undoId} กลับมาเป็นรอดำเนินการแล้วค่ะ — "${escapeHtml(task.description)}"\n\n` + text),
+          text: sanitizeHtml(`↩️ Task #${undoId} กลับมาเป็นรอดำเนินการแล้วค่ะ — "${escapeHtml(truncateDesc(task.description))}"\n\n` + text),
           parse_mode: "HTML",
           reply_markup: { inline_keyboard: buttons },
         }),
       });
+      return;
+    }
+
+    // Delete — permanently remove task from DB
+    if (action === "del") {
+      const delId = Number(parts[2]);
+      const task = await env.DB
+        .prepare(`SELECT id, description FROM tasks WHERE id = ?`)
+        .bind(delId)
+        .first();
+
+      if (!task) {
+        await sendTelegram(env, chatId, `Task #${delId} ไม่พบแล้วค่ะ`, null);
+        return;
+      }
+
+      await env.DB.prepare(`DELETE FROM tasks WHERE id = ?`).bind(delId).run();
+
+      // Refresh: if we came from history view, re-render history; otherwise show tasks
+      const { results: histCheck } = await env.DB.prepare(
+        `SELECT COUNT(*) as c FROM tasks WHERE status IN ('done','cancelled')`
+      ).all();
+      const total = histCheck[0].c;
+
+      if (total > 0) {
+        // Re-render history at offset 0
+        const { results } = await env.DB.prepare(
+          `SELECT id, description, status, result, due_on,
+                  datetime(completed_at, '+7 hours') as completed_at
+           FROM tasks WHERE status IN ('done','cancelled')
+           ORDER BY completed_at DESC LIMIT 10`
+        ).all();
+
+        let text = `🗑 ลบ Task #${delId} แล้วค่ะ — "${escapeHtml(truncateDesc(task.description))}"\n\n`;
+        text += "<b>📋 ประวัติ Tasks</b>\n\n";
+        const buttons = [];
+        for (const t of results) {
+          const icon = t.status === "done" ? "✅" : "❌";
+          text += `${icon} <b>#${t.id}</b> ${escapeHtml(truncateDesc(t.description))}\n`;
+          if (t.result) text += `   ↳ ${escapeHtml(truncateDesc(t.result))}\n`;
+          if (t.due_on) text += `   📅 กำหนด: ${t.due_on}\n`;
+          text += `   <i>${t.status === "done" ? "เสร็จ" : "ยกเลิก"}: ${t.completed_at}</i>\n\n`;
+          buttons.push([
+            { text: `↩️ Undo #${t.id}`, callback_data: `tk:u:${t.id}` },
+            { text: `🗑 ลบ #${t.id}`, callback_data: `tk:del:${t.id}` },
+          ]);
+        }
+        text += `แสดง 1-${results.length} จาก ${total} รายการ`;
+
+        const navButtons = [];
+        if (total > 10) navButtons.push({ text: "▶️ ถัดไป", callback_data: "tk:h:10" });
+        if (navButtons.length) buttons.push(navButtons);
+        buttons.push([{ text: "🔙 กลับ Tasks", callback_data: "tk:b" }]);
+
+        await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/editMessageText`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            chat_id: chatId,
+            message_id: messageId,
+            text: sanitizeHtml(text),
+            parse_mode: "HTML",
+            reply_markup: { inline_keyboard: buttons },
+          }),
+        });
+      } else {
+        // No more history, go back to tasks view
+        const { text, buttons } = await buildTasksDisplay(env);
+        await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/editMessageText`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            chat_id: chatId,
+            message_id: messageId,
+            text: sanitizeHtml(`🗑 ลบ Task #${delId} แล้วค่ะ — "${escapeHtml(truncateDesc(task.description))}"\n\n` + text),
+            parse_mode: "HTML",
+            reply_markup: { inline_keyboard: buttons },
+          }),
+        });
+      }
       return;
     }
 
@@ -3983,13 +4074,13 @@ async function handleTaskCallback(env, callbackQuery) {
         .prepare(`UPDATE tasks SET status='done', completed_at=datetime('now') WHERE id=?`)
         .bind(taskId)
         .run();
-      confirmMsg = `✅ Task #${taskId} เสร็จแล้วค่ะ — "${escapeHtml(task.description)}"`;
+      confirmMsg = `✅ Task #${taskId} เสร็จแล้วค่ะ — "${escapeHtml(truncateDesc(task.description))}"`;
     } else if (action === "x") {
       await env.DB
         .prepare(`UPDATE tasks SET status='cancelled', completed_at=datetime('now') WHERE id=?`)
         .bind(taskId)
         .run();
-      confirmMsg = `❌ ยกเลิก Task #${taskId} แล้วค่ะ — "${escapeHtml(task.description)}"`;
+      confirmMsg = `❌ ยกเลิก Task #${taskId} แล้วค่ะ — "${escapeHtml(truncateDesc(task.description))}"`;
     }
 
     // Replace original buttons with undo button
@@ -4517,7 +4608,7 @@ async function proactiveAlert(env) {
     if (overdue.length > 0) {
       alert += "<b>🔴 เกินกำหนด:</b>\n";
       for (const t of overdue) {
-        alert += `⚠️ <b>#${t.id}</b> ${escapeHtml(t.description)} (กำหนด ${t.due_on})\n`;
+        alert += `⚠️ <b>#${t.id}</b> ${escapeHtml(truncateDesc(t.description))} (กำหนด ${t.due_on})\n`;
         buttons.push([
           { text: `✅ Done #${t.id}`, callback_data: `tk:d:${t.id}` },
           { text: `❌ Cancel #${t.id}`, callback_data: `tk:x:${t.id}` },
@@ -4529,7 +4620,7 @@ async function proactiveAlert(env) {
     if (stale.length > 0) {
       alert += "<b>⏳ ค้างนานเกิน 48 ชม.:</b>\n";
       for (const t of stale) {
-        alert += `⏳ <b>#${t.id}</b> ${escapeHtml(t.description)} (สร้างเมื่อ ${t.created_at})\n`;
+        alert += `⏳ <b>#${t.id}</b> ${escapeHtml(truncateDesc(t.description))} (สร้างเมื่อ ${t.created_at})\n`;
         buttons.push([
           { text: `✅ Done #${t.id}`, callback_data: `tk:d:${t.id}` },
           { text: `❌ Cancel #${t.id}`, callback_data: `tk:x:${t.id}` },
