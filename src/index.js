@@ -3679,14 +3679,17 @@ async function handleTaskCommand(env, message, args) {
       .bind(description)
       .run();
     const id = meta.last_row_id;
-    await sendTelegramWithKeyboard(env, message.chat.id,
-      `📌 สร้าง Task #${id} แล้วค่ะ\n"${escapeHtml(description)}"`,
-      message.message_id,
-      [[
-        { text: `✅ Done #${id}`, callback_data: `tk:d:${id}` },
-        { text: `❌ Cancel #${id}`, callback_data: `tk:x:${id}` },
-      ]]
-    );
+    const confirmText = `📌 สร้าง Task #${id} แล้วค่ะ\n"${escapeHtml(description)}"`;
+    if (message.chat.type === "private") {
+      await sendTelegramWithKeyboard(env, message.chat.id, confirmText, message.message_id,
+        [[
+          { text: `✅ Done #${id}`, callback_data: `tk:d:${id}` },
+          { text: `❌ Cancel #${id}`, callback_data: `tk:x:${id}` },
+        ]]
+      );
+    } else {
+      await sendTelegram(env, message.chat.id, confirmText, message.message_id, true);
+    }
   } catch (err) {
     console.error("handleTaskCommand error:", err);
   }
@@ -3770,10 +3773,11 @@ async function buildTasksDisplay(env) {
 async function handleTasksCommand(env, message) {
   try {
     const { text, buttons } = await buildTasksDisplay(env);
-    if (buttons.length > 0) {
+    const isDM = message.chat.type === "private";
+    if (isDM && buttons.length > 0) {
       await sendTelegramWithKeyboard(env, message.chat.id, text, message.message_id, buttons);
     } else {
-      await sendTelegram(env, message.chat.id, text, message.message_id);
+      await sendTelegram(env, message.chat.id, text, message.message_id, true);
     }
   } catch (err) {
     console.error("handleTasksCommand error:", err);
