@@ -18,7 +18,7 @@ import { handleDeleteCommand, handleDeleteCallback } from './handlers/delete.js'
 import { handleDashboardCommand, handleTaskCommand, handleTasksCommand, handleDoneCommand, handleCancelCommand, handleTaskCallback } from './handlers/tasks.js';
 import { handleRememberCommand, handleMemoriesCommand, handleForgetCommand, handleCooldownCommand, handleHeatupCommand } from './handlers/memory.js';
 import { handleAllowCommand, handleRevokeCommand, handleUsersCommand } from './handlers/members.js';
-import { handleSummaryCommand, handleSummaryCallback } from './handlers/summary.js';
+import { handleSummaryCommand, handleSummaryCallback, handleSummaryCustomReply } from './handlers/summary.js';
 import { handleCompanyCommand, handleCompanyCallback, handleCompanyReply } from './handlers/company.js';
 
 // === Cron imports ===
@@ -359,6 +359,20 @@ export default {
             if (pending) {
               await env.DB.prepare(`DELETE FROM pending_recaps WHERE user_id = ?`).bind(message.chat.id).run();
               ctx.waitUntil(handleRecapReply(env, message, pending.target_chat_id, text));
+              return new Response("OK", { status: 200 });
+            }
+          } catch (e) { /* table might not exist yet */ }
+        }
+
+        // summary custom day reply — open to boss + member
+        if (message.reply_to_message.text.startsWith('📋 กรุณาพิมพ์จำนวนวัน')) {
+          try {
+            const pending = await env.DB.prepare(
+              `SELECT company_filter FROM pending_summary_custom WHERE user_id = ?`
+            ).bind(message.chat.id).first();
+            if (pending) {
+              await env.DB.prepare(`DELETE FROM pending_summary_custom WHERE user_id = ?`).bind(message.chat.id).run();
+              ctx.waitUntil(handleSummaryCustomReply(env, message, pending.company_filter, text));
               return new Response("OK", { status: 200 });
             }
           } catch (e) { /* table might not exist yet */ }

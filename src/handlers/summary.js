@@ -114,17 +114,129 @@ export async function handleSummaryCommand(env, message, args) {
         reply += s.summary_text.substring(0, 300) + (s.summary_text.length > 300 ? "..." : "") + "\n\n";
       }
       await sendTelegram(env, chatId, reply.trim(), message.message_id);
+    } else if (isDM && !parseInt(parts[0])) {
+      // DM with no numeric arg → interactive flow
+      const hasCompanies = await checkHasCompanies(env);
+      if (hasCompanies) {
+        await showCompanySelection(env, chatId, message.message_id, null);
+      } else {
+        await showDaySelection(env, chatId, message.message_id, "all", false);
+      }
     } else {
-      // /summary หรือ /summary <N>
+      // /summary <N> (with arg) or group chat → direct listing
       const days = parseInt(parts[0]) || 7;
-      const { text: reply, buttons } = await buildSummaryListing(env, chatId, isDM, days);
-      await sendSummaryWithButtons(env, chatId, reply, message.message_id, buttons);
+      if (isDM) {
+        const { text: reply, buttons } = await buildSummaryListing(env, chatId, true, days, "all");
+        await sendSummaryWithButtons(env, chatId, reply, message.message_id, buttons);
+      } else {
+        const { text: reply, buttons } = await buildSummaryListing(env, chatId, false, days, null);
+        await sendSummaryWithButtons(env, chatId, reply, message.message_id, buttons);
+      }
     }
   } catch (err) {
     console.error("handleSummaryCommand error:", err);
     await sendTelegram(env, message.chat.id, "เกิดข้อผิดพลาดค่ะนาย ลองใหม่อีกครั้ง", message.message_id);
   }
 }
+
+// --- Helpers ---
+
+async function checkHasCompanies(env) {
+  try {
+    const row = await env.DB.prepare(`SELECT COUNT(*) as cnt FROM companies`).first();
+    return row && row.cnt > 0;
+  } catch { return false; }
+}
+
+async function resolveCompanyName(env, companyFilter) {
+  if (companyFilter === "all") return "ทั้งหมด";
+  if (companyFilter === "none") return "อื่นๆ";
+  try {
+    const row = await env.DB.prepare(`SELECT name FROM companies WHERE id = ?`).bind(Number(companyFilter)).first();
+    return row?.name || `Company #${companyFilter}`;
+  } catch { return `Company #${companyFilter}`; }
+}
+
+// --- Step 1: Company Selection ---
+
+async function showCompanySelection(env, chatId, replyToMessageId, messageIdToEdit) {
+  let companies = [];
+  let hasUnassigned = false;
+  try {
+    const { results } = await env.DB.prepare(`SELECT id, name FROM companies ORDER BY name ASC`).all();
+    companies = results || [];
+    const unassigned = await env.DB.prepare(
+      `SELECT COUNT(*) as cnt FROM group_registry WHERE is_active = 1 AND company_id IS NULL`
+    ).first();
+    hasUnassigned = unassigned && unassigned.cnt > 0;
+  } catch { /* companies table may not exist */ }
+
+  const text = "📋 Summary — เลือกบริษัท:";
+  const buttons = [];
+  buttons.push([{ text: "📋 ทั้งหมด", callback_data: "sm:co:all" }]);
+  // 2 companies per row
+  for (let i = 0; i < companies.length; i += 2) {
+    const row = [{ text: `🏢 ${companies[i].name}`, callback_data: `sm:co:${companies[i].id}` }];
+    if (companies[i + 1]) {
+      row.push({ text: `🏢 ${companies[i + 1].name}`, callback_data: `sm:co:${companies[i + 1].id}` });
+    }
+    buttons.push(row);
+  }
+  if (hasUnassigned) {
+    buttons.push([{ text: "📎 อื่นๆ", callback_data: "sm:co:none" }]);
+  }
+
+  if (messageIdToEdit) {
+    await editMessage(env, chatId, messageIdToEdit, text, buttons);
+  } else {
+    await sendSummaryWithButtons(env, chatId, text, replyToMessageId, buttons);
+  }
+}
+
+// --- Step 2: Day Selection ---
+
+async function showDaySelection(env, chatId, messageIdOrReplyTo, companyFilter, isEdit) {
+  const companyName = await resolveCompanyName(env, companyFilter);
+  const text = `📋 Summary "${companyName}" — เลือกช่วงเวลา:`;
+  const buttons = [
+    [
+      { text: "📅 1 วัน", callback_data: `sm:v:${companyFilter}:1` },
+      { text: "📅 3 วัน", callback_data: `sm:v:${companyFilter}:3` },
+    ],
+    [
+      { text: "📅 7 วัน", callback_data: `sm:v:${companyFilter}:7` },
+      { text: "✏️ กำหนดเอง", callback_data: `sm:c:${companyFilter}` },
+    ],
+  ];
+  // Show back button only if companies exist
+  const hasCompanies = await checkHasCompanies(env);
+  if (hasCompanies) {
+    buttons.push([{ text: "⬅️ เลือกบริษัท", callback_data: "sm:back" }]);
+  }
+
+  if (isEdit) {
+    await editMessage(env, chatId, messageIdOrReplyTo, text, buttons);
+  } else {
+    await sendSummaryWithButtons(env, chatId, text, messageIdOrReplyTo, buttons);
+  }
+}
+
+// --- Step 3: Result buttons ---
+
+function summaryResultButtons(activeDays, companyFilter) {
+  const options = [1, 3, 7];
+  const row1 = options.map(d => ({
+    text: d === activeDays ? `• ${d} วัน •` : `${d} วัน`,
+    callback_data: `sm:v:${companyFilter}:${d}`,
+  }));
+  const row2 = [
+    { text: "✏️ กำหนดเอง", callback_data: `sm:c:${companyFilter}` },
+    { text: "⬅️ เลือกบริษัท", callback_data: "sm:back" },
+  ];
+  return [row1, row2];
+}
+
+// --- Existing helpers (kept) ---
 
 export async function sendSummaryWithButtons(env, chatId, text, replyToMessageId, buttons) {
   // Summary text is plain text (no HTML) — send without parse_mode to avoid HTML parse errors
@@ -151,6 +263,20 @@ export async function sendSummaryWithButtons(env, chatId, text, replyToMessageId
   }
 }
 
+async function editMessage(env, chatId, messageId, text, buttons) {
+  const editText = text.length > 4000 ? text.substring(0, 4000) + "\n\n…(ตัดบางส่วน)" : text;
+  await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/editMessageText`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      chat_id: chatId,
+      message_id: messageId,
+      text: editText,
+      reply_markup: { inline_keyboard: buttons },
+    }),
+  });
+}
+
 export function summaryDayButtons(activeDays, groupChatId) {
   const options = [3, 7, 14, 30];
   const prefix = groupChatId ? `sm:${groupChatId}:` : "sm:dm:";
@@ -160,49 +286,82 @@ export function summaryDayButtons(activeDays, groupChatId) {
   }))];
 }
 
-export async function buildSummaryListing(env, chatId, isDM, days) {
-  // Check if companies exist (for grouped display in DM)
-  let hasCompanies = false;
-  if (isDM) {
-    try {
-      const companyCount = await env.DB.prepare(`SELECT COUNT(*) as cnt FROM companies`).first();
-      hasCompanies = companyCount && companyCount.cnt > 0;
-    } catch { /* companies table may not exist yet */ }
-  }
+// --- Build Summary Listing ---
 
-  if (isDM && hasCompanies) {
-    const { results } = await env.DB.prepare(
-      `SELECT s.chat_title, COALESCE(s.summary_date, s.week_end) as summary_date,
-              COALESCE(s.summary_type, 'weekly') as summary_type, s.summary_text, s.message_count,
-              c.name as company_name
-       FROM summaries s
-       LEFT JOIN group_registry g ON s.chat_id = g.chat_id
-       LEFT JOIN companies c ON g.company_id = c.id
-       WHERE COALESCE(s.summary_date, s.week_end) >= date('now', '-' || ? || ' days')
-       ORDER BY COALESCE(c.name, 'zzz') ASC, COALESCE(s.summary_date, s.week_end) DESC
-       LIMIT 30`
-    ).bind(days).all();
+export async function buildSummaryListing(env, chatId, isDM, days, companyFilter) {
+  // companyFilter: "all" = all companies grouped, "none" = unassigned only, numeric = specific company, null = group chat (flat)
+  if (isDM && companyFilter !== null) {
+    // DM with company filter
+    let query, bindParams;
+    if (companyFilter === "none") {
+      query = `SELECT s.chat_title, COALESCE(s.summary_date, s.week_end) as summary_date,
+                COALESCE(s.summary_type, 'weekly') as summary_type, s.summary_text, s.message_count,
+                NULL as company_name
+         FROM summaries s
+         LEFT JOIN group_registry g ON s.chat_id = g.chat_id
+         WHERE COALESCE(s.summary_date, s.week_end) >= date('now', '-' || ? || ' days')
+           AND (g.company_id IS NULL)
+         ORDER BY COALESCE(s.summary_date, s.week_end) DESC
+         LIMIT 30`;
+      bindParams = [days];
+    } else if (companyFilter !== "all" && !isNaN(Number(companyFilter))) {
+      query = `SELECT s.chat_title, COALESCE(s.summary_date, s.week_end) as summary_date,
+                COALESCE(s.summary_type, 'weekly') as summary_type, s.summary_text, s.message_count,
+                c.name as company_name
+         FROM summaries s
+         LEFT JOIN group_registry g ON s.chat_id = g.chat_id
+         LEFT JOIN companies c ON g.company_id = c.id
+         WHERE COALESCE(s.summary_date, s.week_end) >= date('now', '-' || ? || ' days')
+           AND g.company_id = ?
+         ORDER BY COALESCE(s.summary_date, s.week_end) DESC
+         LIMIT 30`;
+      bindParams = [days, Number(companyFilter)];
+    } else {
+      // "all" — group by company
+      query = `SELECT s.chat_title, COALESCE(s.summary_date, s.week_end) as summary_date,
+                COALESCE(s.summary_type, 'weekly') as summary_type, s.summary_text, s.message_count,
+                c.name as company_name
+         FROM summaries s
+         LEFT JOIN group_registry g ON s.chat_id = g.chat_id
+         LEFT JOIN companies c ON g.company_id = c.id
+         WHERE COALESCE(s.summary_date, s.week_end) >= date('now', '-' || ? || ' days')
+         ORDER BY COALESCE(c.name, 'zzz') ASC, COALESCE(s.summary_date, s.week_end) DESC
+         LIMIT 30`;
+      bindParams = [days];
+    }
+
+    const { results } = await env.DB.prepare(query).bind(...bindParams).all();
+    const companyName = await resolveCompanyName(env, companyFilter);
+    const buttons = summaryResultButtons(days, companyFilter);
 
     if (results.length === 0) {
-      return { text: `ไม่มี summary ใน ${days} วันที่ผ่านมาค่ะนาย`, buttons: summaryDayButtons(days, null) };
+      return { text: `📋 "${companyName}" — ไม่มี summary ใน ${days} วันที่ผ่านมาค่ะนาย`, buttons };
     }
 
-    let reply = `📋 Summaries (${days} วันล่าสุด): ${results.length} รายการ\n\n`;
-    let currentCompany = undefined;
-    for (const s of results) {
-      const companyLabel = s.company_name || null;
-      if (companyLabel !== currentCompany) {
-        currentCompany = companyLabel;
-        reply += currentCompany ? `🏢 ${currentCompany}\n` : `📎 อื่นๆ\n`;
+    let reply = `📋 Summary "${companyName}" (${days} วันล่าสุด): ${results.length} รายการ\n\n`;
+    if (companyFilter === "all") {
+      let currentCompany = undefined;
+      for (const s of results) {
+        const companyLabel = s.company_name || null;
+        if (companyLabel !== currentCompany) {
+          currentCompany = companyLabel;
+          reply += currentCompany ? `🏢 ${currentCompany}\n` : `📎 อื่นๆ\n`;
+        }
+        const typeLabel = s.summary_type === "daily" ? "📅" : "📆";
+        reply += `${typeLabel} ${s.summary_date} | ${s.chat_title} (${s.message_count} msg)\n`;
+        reply += s.summary_text.substring(0, 300) + (s.summary_text.length > 300 ? "..." : "") + "\n\n";
       }
-      const typeLabel = s.summary_type === "daily" ? "📅" : "📆";
-      reply += `${typeLabel} ${s.summary_date} | ${s.chat_title} (${s.message_count} msg)\n`;
-      reply += s.summary_text.substring(0, 300) + (s.summary_text.length > 300 ? "..." : "") + "\n\n";
+    } else {
+      for (const s of results) {
+        const typeLabel = s.summary_type === "daily" ? "📅" : "📆";
+        reply += `${typeLabel} ${s.summary_date} | ${s.chat_title} (${s.message_count} msg)\n`;
+        reply += s.summary_text.substring(0, 300) + (s.summary_text.length > 300 ? "..." : "") + "\n\n";
+      }
     }
-    return { text: reply.trim(), buttons: summaryDayButtons(days, null) };
+    return { text: reply.trim(), buttons };
   }
 
-  // Flat list (group chat or no companies)
+  // Group chat or DM without company filter (legacy) — flat list
   const listQuery = isDM
     ? `SELECT chat_title, COALESCE(summary_date, week_end) as summary_date,
               COALESCE(summary_type, 'weekly') as summary_type, summary_text, message_count
@@ -232,42 +391,127 @@ export async function buildSummaryListing(env, chatId, isDM, days) {
   return { text: reply.trim(), buttons: summaryDayButtons(days, groupChatId) };
 }
 
+// --- Callback Handler ---
+
 export async function handleSummaryCallback(env, callbackQuery) {
   const chatId = callbackQuery.message.chat.id;
   const messageId = callbackQuery.message.message_id;
   const data = callbackQuery.data;
 
-  // sm:dm:<days> or sm:<groupChatId>:<days>
-  const match = data.match(/^sm:(dm|(-?\d+)):(\d+)$/);
-  if (!match) return;
-
-  const isDM = match[1] === "dm";
-  const targetChatId = isDM ? chatId : match[1];
-  const days = parseInt(match[3]) || 7;
-
-  await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/answerCallbackQuery`, {
+  const answerCallback = () => fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/answerCallbackQuery`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ callback_query_id: callbackQuery.id }),
   });
 
   try {
-    const { text, buttons } = await buildSummaryListing(env, targetChatId, isDM, days);
-    const editText = text.length > 4000 ? text.substring(0, 4000) + "\n\n…(ตัดบางส่วน)" : text;
-    await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/editMessageText`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        chat_id: chatId,
-        message_id: messageId,
-        text: editText,
-        reply_markup: { inline_keyboard: buttons },
-      }),
-    });
+    // sm:back → back to company selection
+    if (data === "sm:back") {
+      await answerCallback();
+      await showCompanySelection(env, chatId, null, messageId);
+      return;
+    }
+
+    // sm:co:<filter> → show day selection
+    const coMatch = data.match(/^sm:co:(.+)$/);
+    if (coMatch) {
+      await answerCallback();
+      const companyFilter = coMatch[1];
+      await showDaySelection(env, chatId, messageId, companyFilter, true);
+      return;
+    }
+
+    // sm:v:<filter>:<days> → show summary results
+    const vMatch = data.match(/^sm:v:(.+):(\d+)$/);
+    if (vMatch) {
+      await answerCallback();
+      const companyFilter = vMatch[1];
+      const days = parseInt(vMatch[2]) || 7;
+      const { text, buttons } = await buildSummaryListing(env, chatId, true, days, companyFilter);
+      await editMessage(env, chatId, messageId, text, buttons);
+      return;
+    }
+
+    // sm:c:<filter> → custom days (force_reply)
+    const cMatch = data.match(/^sm:c:(.+)$/);
+    if (cMatch) {
+      const companyFilter = cMatch[1];
+      // Store pending custom in DB
+      await env.DB.prepare(
+        `CREATE TABLE IF NOT EXISTS pending_summary_custom (user_id INTEGER PRIMARY KEY, company_filter TEXT, created_at TEXT DEFAULT (datetime('now')))`
+      ).run();
+      await env.DB.prepare(
+        `INSERT OR REPLACE INTO pending_summary_custom (user_id, company_filter) VALUES (?, ?)`
+      ).bind(chatId, companyFilter).run();
+
+      // Remove inline buttons from original message
+      await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/editMessageReplyMarkup`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          chat_id: chatId,
+          message_id: messageId,
+          reply_markup: { inline_keyboard: [] },
+        }),
+      });
+
+      // Send force reply
+      await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          chat_id: chatId,
+          text: "📋 กรุณาพิมพ์จำนวนวัน (1-365) ที่ต้องการดู Summary (reply ข้อความนี้ค่ะ)",
+          reply_markup: { force_reply: true, selective: true },
+        }),
+      });
+
+      await answerCallback();
+      return;
+    }
+
+    // Legacy: sm:dm:<days>
+    const dmMatch = data.match(/^sm:dm:(\d+)$/);
+    if (dmMatch) {
+      await answerCallback();
+      const days = parseInt(dmMatch[1]) || 7;
+      const { text, buttons } = await buildSummaryListing(env, chatId, true, days, "all");
+      await editMessage(env, chatId, messageId, text, buttons);
+      return;
+    }
+
+    // Legacy: sm:<groupChatId>:<days>
+    const groupMatch = data.match(/^sm:(-?\d+):(\d+)$/);
+    if (groupMatch) {
+      await answerCallback();
+      const targetChatId = groupMatch[1];
+      const days = parseInt(groupMatch[2]) || 7;
+      const { text, buttons } = await buildSummaryListing(env, targetChatId, false, days, null);
+      await editMessage(env, chatId, messageId, text, buttons);
+      return;
+    }
   } catch (err) {
     console.error("handleSummaryCallback error:", err);
   }
+
+  // Fallback: answer callback to dismiss spinner
+  await answerCallback().catch(() => {});
 }
+
+// --- Custom Reply Handler ---
+
+export async function handleSummaryCustomReply(env, message, companyFilter, text) {
+  const chatId = message.chat.id;
+  const days = parseInt(text.trim());
+  if (!days || days < 1 || days > 365) {
+    await sendTelegram(env, chatId, "กรุณาพิมพ์ตัวเลข 1-365 ค่ะ", message.message_id);
+    return;
+  }
+  const { text: reply, buttons } = await buildSummaryListing(env, chatId, true, days, companyFilter);
+  await sendSummaryWithButtons(env, chatId, reply, message.message_id, buttons);
+}
+
+// --- Gemini Summary Generators ---
 
 export async function generateDailySummary(env, groupTitle, conversationText, dateStr) {
   const prompt = `สรุปบทสนทนาของกลุ่ม "${groupTitle}" วันที่ ${dateStr} อย่างละเอียด เน้น:
