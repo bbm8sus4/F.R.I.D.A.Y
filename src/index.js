@@ -3838,7 +3838,7 @@ async function handleTaskCallback(env, callbackQuery) {
   const chatId = callbackQuery.message.chat.id;
   const messageId = callbackQuery.message.message_id;
   const parts = callbackQuery.data.split(":");
-  const action = parts[1]; // "d" (done), "x" (cancel), "h" (history), "b" (back)
+  const action = parts[1]; // "d" (done), "x" (cancel), "h" (history), "b" (back), "u" (undo)
 
   // Answer callback immediately
   await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/answerCallbackQuery`, {
@@ -3953,7 +3953,7 @@ async function handleTaskCallback(env, callbackQuery) {
         body: JSON.stringify({
           chat_id: chatId,
           message_id: messageId,
-          text: sanitizeHtml(`↩️ Task #${undoId} กลับมาเป็นรอดำเนินการแล้วค่ะ — "${task.description}"\n\n` + text),
+          text: sanitizeHtml(`↩️ Task #${undoId} กลับมาเป็นรอดำเนินการแล้วค่ะ — "${escapeHtml(task.description)}"\n\n` + text),
           parse_mode: "HTML",
           reply_markup: { inline_keyboard: buttons },
         }),
@@ -3973,21 +3973,22 @@ async function handleTaskCallback(env, callbackQuery) {
       return;
     }
 
+    let confirmMsg;
     if (action === "d") {
       await env.DB
         .prepare(`UPDATE tasks SET status='done', completed_at=datetime('now') WHERE id=?`)
         .bind(taskId)
         .run();
-      await sendTelegram(env, chatId, `✅ Task #${taskId} เสร็จแล้วค่ะ — "${task.description}"`, null);
+      confirmMsg = `✅ Task #${taskId} เสร็จแล้วค่ะ — "${escapeHtml(task.description)}"`;
     } else if (action === "x") {
       await env.DB
         .prepare(`UPDATE tasks SET status='cancelled', completed_at=datetime('now') WHERE id=?`)
         .bind(taskId)
         .run();
-      await sendTelegram(env, chatId, `❌ ยกเลิก Task #${taskId} แล้วค่ะ — "${task.description}"`, null);
+      confirmMsg = `❌ ยกเลิก Task #${taskId} แล้วค่ะ — "${escapeHtml(task.description)}"`;
     }
 
-    // Remove inline buttons from the original message
+    // Replace original buttons with undo button
     await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/editMessageReplyMarkup`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -3997,6 +3998,13 @@ async function handleTaskCallback(env, callbackQuery) {
         reply_markup: { inline_keyboard: [] },
       }),
     });
+
+    // Send confirmation with undo button
+    if (confirmMsg) {
+      await sendTelegramWithKeyboard(env, chatId, confirmMsg, null,
+        [[{ text: `↩️ Undo #${taskId}`, callback_data: `tk:u:${taskId}` }]]
+      );
+    }
   } catch (err) {
     console.error("handleTaskCallback error:", err);
   }
