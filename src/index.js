@@ -537,6 +537,7 @@ export default {
           "📨 Send": "/send",
           "📋 Recap": "/recap",
           "📝 Tasks": "/tasks",
+          "📋 Summary": "/summary",
         };
         const memberShortcutMap = {
           "📝 Tasks": "/tasks",
@@ -1711,7 +1712,7 @@ async function sendReplyKeyboard(env, chatId) {
         keyboard: [
           [{ text: "📝 Tasks" }, { text: "🧠 Memories" }],
           [{ text: "📨 Send" }, { text: "📋 Recap" }],
-          [{ text: "🗑 Delete" }, { text: "📊 Dashboard", web_app: { url: env.DASHBOARD_URL || "https://friday-dashboard-3rf.pages.dev" } }],
+          [{ text: "🗑 Delete" }, env.DASHBOARD_URL ? { text: "📊 Dashboard", web_app: { url: env.DASHBOARD_URL } } : { text: "📋 Summary" }],
         ],
         resize_keyboard: true,
         is_persistent: true,
@@ -2635,11 +2636,12 @@ async function handleSendCallback(env, callbackQuery) {
   const action = parts[1]; // "g"
   const targetChatId = parts.slice(2).join(":"); // handle negative chat IDs
 
+  const dashBtn = env.DASHBOARD_URL ? { text: "📊 Dashboard", web_app: { url: env.DASHBOARD_URL } } : { text: "📋 Summary" };
   const REPLY_KB = {
     keyboard: [
       [{ text: "📝 Tasks" }, { text: "🧠 Memories" }],
       [{ text: "📨 Send" }, { text: "📋 Recap" }],
-      [{ text: "🗑 Delete" }, { text: "📊 Dashboard" }],
+      [{ text: "🗑 Delete" }, dashBtn],
     ],
     resize_keyboard: true,
     is_persistent: true,
@@ -3216,11 +3218,12 @@ async function handleRecapCallback(env, callbackQuery) {
       }),
     });
 
+    const dashBtn2 = env.DASHBOARD_URL ? { text: "📊 Dashboard", web_app: { url: env.DASHBOARD_URL } } : { text: "📋 Summary" };
     const REPLY_KB = {
       keyboard: [
         [{ text: "📝 Tasks" }, { text: "🧠 Memories" }],
         [{ text: "📨 Send" }, { text: "📋 Recap" }],
-        [{ text: "🗑 Delete" }, { text: "📊 Dashboard" }],
+        [{ text: "🗑 Delete" }, dashBtn2],
       ],
       resize_keyboard: true,
       is_persistent: true,
@@ -3252,11 +3255,12 @@ async function handleRecapCallback(env, callbackQuery) {
       }),
     });
 
+    const dashBtn3 = env.DASHBOARD_URL ? { text: "📊 Dashboard", web_app: { url: env.DASHBOARD_URL } } : { text: "📋 Summary" };
     const REPLY_KB = {
       keyboard: [
         [{ text: "📝 Tasks" }, { text: "🧠 Memories" }],
         [{ text: "📨 Send" }, { text: "📋 Recap" }],
-        [{ text: "🗑 Delete" }, { text: "📊 Dashboard" }],
+        [{ text: "🗑 Delete" }, dashBtn3],
       ],
       resize_keyboard: true,
       is_persistent: true,
@@ -3748,7 +3752,11 @@ async function executeDeleteAllGroups(env, callbackQuery) {
 }
 
 async function handleDashboardCommand(env, message) {
-  const dashUrl = env.DASHBOARD_URL || "https://friday-dashboard-3rf.pages.dev";
+  const dashUrl = env.DASHBOARD_URL;
+  if (!dashUrl) {
+    await sendTelegram(env, message.chat.id, "ยังไม่ได้ตั้งค่า Dashboard ค่ะ", message.message_id);
+    return;
+  }
   await sendTelegramWithKeyboard(env, message.chat.id, `📊 ${env.BOT_NAME || "Friday"} Dashboard`, null, [
     [{ text: "Open Dashboard", web_app: { url: dashUrl } }],
   ]);
