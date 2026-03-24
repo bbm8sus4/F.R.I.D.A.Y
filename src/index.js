@@ -3742,6 +3742,7 @@ async function buildTasksDisplay(env) {
       buttons.push([
         { text: `✅ Done #${t.id}`, callback_data: `tk:d:${t.id}` },
         { text: `❌ Cancel #${t.id}`, callback_data: `tk:x:${t.id}` },
+        { text: `🗑 #${t.id}`, callback_data: `tk:del:${t.id}` },
       ]);
     }
     text += "\n";
@@ -3755,6 +3756,7 @@ async function buildTasksDisplay(env) {
       buttons.push([
         { text: `✅ Done #${t.id}`, callback_data: `tk:d:${t.id}` },
         { text: `❌ Cancel #${t.id}`, callback_data: `tk:x:${t.id}` },
+        { text: `🗑 #${t.id}`, callback_data: `tk:del:${t.id}` },
       ]);
     }
     text += "\n";
