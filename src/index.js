@@ -14,6 +14,26 @@ const urgentThrottleMap = new Map();
 
 const MAX_PDF_SIZE = 10 * 1024 * 1024; // 10MB
 
+// ===== Multi-user access control =====
+const MEMBER_COMMANDS = new Set([
+  "/task", "/tasks", "/done", "/cancel",
+  "/readlink", "/readpdf", "/readhtml", "/readimg", "/readvoice",
+  "/summary", "/menu", "/start",
+  "/recap", "/delete",
+]);
+
+const MEMBER_CALLBACKS = new Set(["tk:", "rl:", "fc:", "recap:", "del:"]);
+
+async function getUserRole(env, userId) {
+  if (userId === Number(env.BOSS_USER_ID)) return "boss";
+  try {
+    const row = await env.DB.prepare(
+      `SELECT user_id FROM allowed_users WHERE user_id = ?`
+    ).bind(userId).first();
+    return row ? "member" : null;
+  } catch { return null; }
+}
+
 // ===== Helper: ตรวจจับการแท็กบอสในกลุ่ม =====
 function detectBossMention(message, bossId, bossUsername) {
   // 1. Telegram entity mentions (text_mention + @username)
@@ -310,16 +330,30 @@ export default {
     try {
       const update = await request.json();
 
-      // Handle callback queries (inline keyboard buttons) — boss only
+      // Handle callback queries (inline keyboard buttons) — role-based
       const callbackQuery = update.callback_query;
       if (callbackQuery) {
-        if (callbackQuery.from.id !== Number(env.BOSS_USER_ID)) {
+        const cbRole = await getUserRole(env, callbackQuery.from.id);
+        const cbPrefix = callbackQuery.data?.split(":")[0] + ":";
+        if (!cbRole) {
           await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/answerCallbackQuery`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               callback_query_id: callbackQuery.id,
-              text: "ฟังก์ชันคำสั่งใช้งานเฉพาะบุคคล",
+              text: "คุณไม่มีสิทธิ์ใช้ฟังก์ชันนี้ค่ะ",
+              show_alert: true,
+            }),
+          });
+          return new Response("OK", { status: 200 });
+        }
+        if (cbRole === "member" && !MEMBER_CALLBACKS.has(cbPrefix)) {
+          await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/answerCallbackQuery`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              callback_query_id: callbackQuery.id,
+              text: "ฟังก์ชันนี้สำหรับผู้ดูแลระบบเท่านั้นค่ะ",
               show_alert: true,
             }),
           });
@@ -482,33 +516,49 @@ export default {
         }
       }
 
-      // บอสเท่านั้นที่สั่งได้ทุกอย่าง คนอื่นแค่ถูกเก็บข้อมูล
-      if (!isBoss) {
+      // Role-based access: boss = full, member = limited, null = rejected
+      const role = isBoss ? "boss" : await getUserRole(env, message.from.id);
+      if (!role) {
         if (isDM) {
-          ctx.waitUntil(sendTelegram(env, message.chat.id, "ขออภัยค่ะ Friday เป็น AI ผู้ช่วยส่วนตัว ให้บริการเฉพาะเจ้านายเท่านั้นค่ะ", null));
+          ctx.waitUntil(sendTelegram(env, message.chat.id, "ขออภัยค่ะ Friday เป็น AI ผู้ช่วยส่วนตัว ไม่อนุญาตให้ใช้งานค่ะ\nหากต้องการใช้งาน กรุณาติดต่อผู้ดูแลระบบค่ะ", null));
         }
         return new Response("OK", { status: 200 });
       }
 
       // Reply keyboard shortcuts (DM only)
       if (isDM) {
-        const shortcutMap = {
+        const bossShortcutMap = {
           "🧠 Memories": "/memories",
           "🗑 Delete": "/delete",
           "📨 Send": "/send",
           "📋 Recap": "/recap",
           "📝 Tasks": "/tasks",
         };
+        const memberShortcutMap = {
+          "📝 Tasks": "/tasks",
+          "📖 Read Link": "/readlink",
+          "📋 Recap": "/recap",
+          "🗑 Delete": "/delete",
+          "📋 Summary": "/summary",
+        };
+        const shortcutMap = role === "boss" ? bossShortcutMap : memberShortcutMap;
         if (shortcutMap[text]) text = shortcutMap[text];
       }
 
-      // Boss commands
+      // Commands — role-based access
       const parsed = parseCommand(text);
       if (parsed) {
         // Strip bot mention from args (e.g. "/readhtml @Bot_name" → args = "")
         if (botUsername) {
           parsed.args = parsed.args.replace(new RegExp(`@${botUsername}\\b\\s*`, "i"), "").trim();
         }
+
+        // Member access check
+        if (role === "member" && !MEMBER_COMMANDS.has(parsed.cmd)) {
+          ctx.waitUntil(sendTelegram(env, message.chat.id, "ฟีเจอร์นี้สำหรับผู้ดูแลระบบเท่านั้นค่ะ", message.message_id));
+          return new Response("OK", { status: 200 });
+        }
+
         const handlers = {
           "/send": () => handleSendCommand(env, message, parsed.args),
           "/remember": () => handleRememberCommand(env, message, parsed.args),
@@ -529,8 +579,11 @@ export default {
           "/tasks": () => handleTasksCommand(env, message),
           "/done": () => handleDoneCommand(env, message, parsed.args),
           "/cancel": () => handleCancelCommand(env, message, parsed.args),
-          "/menu": () => sendReplyKeyboard(env, message.chat.id),
-          "/start": () => sendReplyKeyboard(env, message.chat.id),
+          "/menu": () => role === "boss" ? sendReplyKeyboard(env, message.chat.id) : sendMemberReplyKeyboard(env, message.chat.id, message.from.first_name),
+          "/start": () => role === "boss" ? sendReplyKeyboard(env, message.chat.id) : sendMemberReplyKeyboard(env, message.chat.id, message.from.first_name),
+          "/allow": () => handleAllowCommand(env, message, parsed.args),
+          "/revoke": () => handleRevokeCommand(env, message, parsed.args),
+          "/users": () => handleUsersCommand(env, message),
         };
 
         const handler = handlers[parsed.cmd];
@@ -540,8 +593,8 @@ export default {
         }
       }
 
-      // Auto-detect HTML/PDF files from boss (no command needed)
-      if (isBoss && !parsed && (hasPdf || hasHtml)) {
+      // Auto-detect HTML/PDF files (no command needed) — boss + member
+      if (role && !parsed && (hasPdf || hasHtml)) {
         if (hasHtml) {
           ctx.waitUntil(handleReadhtmlCommand(env, message, ""));
         } else if (hasPdf) {
@@ -550,37 +603,23 @@ export default {
         return new Response("OK", { status: 200 });
       }
 
-      // Handle readlink "ถามเอง" reply
+      // Handle reply-to-bot interactions
       const isReplyToBot = message.reply_to_message?.from?.username === botUsername;
-      if (isBoss && isReplyToBot && message.reply_to_message?.text) {
+      if (role && isReplyToBot && message.reply_to_message?.text) {
+        // rl: and fc: replies — open to boss + member
         const rlMatch = message.reply_to_message.text.match(/\[rl:(\d+)\]/);
         if (rlMatch) {
           ctx.waitUntil(handleReadlinkAsk(env, message, Number(rlMatch[1]), text));
           return new Response("OK", { status: 200 });
         }
 
-        // Handle file cache "ถามเอง" reply
         const fcMatch = message.reply_to_message.text.match(/\[fc:(\d+)\]/);
         if (fcMatch) {
           ctx.waitUntil(handleFileAsk(env, message, Number(fcMatch[1]), text));
           return new Response("OK", { status: 200 });
         }
 
-        // Handle send reply — lookup target from DB, fallback to old [send:] tag
-        if (message.reply_to_message.text.startsWith('📨 สั่ง AI')) {
-          try {
-            const pending = await env.DB.prepare(
-              `SELECT target_chat_id FROM pending_sends WHERE user_id = ?`
-            ).bind(message.chat.id).first();
-            if (pending) {
-              await env.DB.prepare(`DELETE FROM pending_sends WHERE user_id = ?`).bind(message.chat.id).run();
-              ctx.waitUntil(handleSendReply(env, message, pending.target_chat_id, text));
-              return new Response("OK", { status: 200 });
-            }
-          } catch (e) { /* table might not exist yet */ }
-        }
-
-        // Handle recap reply — lookup target from pending_recaps
+        // recap: replies — open to boss + member
         if (message.reply_to_message.text.startsWith('📋 พิมพ์คำสั่ง')) {
           try {
             const pending = await env.DB.prepare(
@@ -593,17 +632,37 @@ export default {
             }
           } catch (e) { /* table might not exist yet */ }
         }
-        const sendMatch = message.reply_to_message.text.match(/\[send:(-?\d+)\]/);
-        if (sendMatch) {
-          ctx.waitUntil(handleSendReply(env, message, sendMatch[1], text));
-          return new Response("OK", { status: 200 });
+
+        // send: replies — boss only
+        if (role === "boss") {
+          if (message.reply_to_message.text.startsWith('📨 สั่ง AI')) {
+            try {
+              const pending = await env.DB.prepare(
+                `SELECT target_chat_id FROM pending_sends WHERE user_id = ?`
+              ).bind(message.chat.id).first();
+              if (pending) {
+                await env.DB.prepare(`DELETE FROM pending_sends WHERE user_id = ?`).bind(message.chat.id).run();
+                ctx.waitUntil(handleSendReply(env, message, pending.target_chat_id, text));
+                return new Response("OK", { status: 200 });
+              }
+            } catch (e) { /* table might not exist yet */ }
+          }
+          const sendMatch = message.reply_to_message.text.match(/\[send:(-?\d+)\]/);
+          if (sendMatch) {
+            ctx.waitUntil(handleSendReply(env, message, sendMatch[1], text));
+            return new Response("OK", { status: 200 });
+          }
         }
       }
 
-      // ตอบเมื่อบอส mention หรือ DM
+      // ตอบเมื่อ mention หรือ DM — แยก boss vs member
       const isMentioned = text.includes(`@${botUsername}`) || isDM || isReplyToBot;
       if (isMentioned) {
-        ctx.waitUntil(handleMention(env, message, botUsername, text, hasMedia, isDM));
+        if (role === "boss") {
+          ctx.waitUntil(handleMention(env, message, botUsername, text, hasMedia, isDM));
+        } else if (role === "member") {
+          ctx.waitUntil(handleMemberChat(env, message, botUsername, text, hasMedia));
+        }
       }
 
       return new Response("OK", { status: 200 });
@@ -1643,6 +1702,26 @@ async function sendReplyKeyboard(env, chatId) {
           [{ text: "📝 Tasks" }, { text: "🧠 Memories" }],
           [{ text: "📨 Send" }, { text: "📋 Recap" }],
           [{ text: "🗑 Delete" }, { text: "📊 Dashboard", web_app: { url: env.DASHBOARD_URL || "https://friday-dashboard-3rf.pages.dev" } }],
+        ],
+        resize_keyboard: true,
+        is_persistent: true,
+      },
+    }),
+  });
+}
+
+async function sendMemberReplyKeyboard(env, chatId, firstName) {
+  await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      chat_id: chatId,
+      text: `สวัสดีค่ะ ${firstName || ""} 👋\nFriday พร้อมช่วยเหลือค่ะ`,
+      reply_markup: {
+        keyboard: [
+          [{ text: "📝 Tasks" }, { text: "📖 Read Link" }],
+          [{ text: "📋 Recap" }, { text: "🗑 Delete" }],
+          [{ text: "📋 Summary" }],
         ],
         resize_keyboard: true,
         is_persistent: true,
@@ -3845,6 +3924,286 @@ async function handleCancelCommand(env, message, args) {
     await sendTelegram(env, message.chat.id, `❌ ยกเลิก Task #${taskId} แล้วค่ะ — "${task.description}"`, message.message_id);
   } catch (err) {
     console.error("handleCancelCommand error:", err);
+  }
+}
+
+// ===== /allow, /revoke, /users — Member management (boss only) =====
+
+async function handleAllowCommand(env, message, args) {
+  try {
+    if (message.from.id !== Number(env.BOSS_USER_ID)) {
+      await sendTelegram(env, message.chat.id, "ฟีเจอร์นี้สำหรับผู้ดูแลระบบเท่านั้นค่ะ", message.message_id);
+      return;
+    }
+    let targetId, targetUsername, targetFirstName;
+
+    // Method 1: Reply to someone's message
+    if (message.reply_to_message?.from && !args.trim()) {
+      const from = message.reply_to_message.from;
+      if (from.is_bot) {
+        await sendTelegram(env, message.chat.id, "ไม่สามารถเพิ่มบอทเป็นสมาชิกได้ค่ะ", message.message_id);
+        return;
+      }
+      targetId = from.id;
+      targetUsername = from.username || null;
+      targetFirstName = from.first_name || null;
+    }
+    // Method 2: /allow <user_id>
+    else if (args.trim()) {
+      targetId = Number(args.trim());
+      if (!targetId || isNaN(targetId)) {
+        await sendTelegram(env, message.chat.id, "Usage: Reply ข้อความแล้วพิมพ์ /allow หรือ /allow <user_id>", message.message_id);
+        return;
+      }
+    } else {
+      await sendTelegram(env, message.chat.id, "Usage: Reply ข้อความแล้วพิมพ์ /allow หรือ /allow <user_id>", message.message_id);
+      return;
+    }
+
+    if (targetId === Number(env.BOSS_USER_ID)) {
+      await sendTelegram(env, message.chat.id, "นายเป็นผู้ดูแลระบบอยู่แล้วค่ะ 😄", message.message_id);
+      return;
+    }
+
+    await env.DB.prepare(
+      `INSERT OR REPLACE INTO allowed_users (user_id, username, first_name, added_by) VALUES (?, ?, ?, ?)`
+    ).bind(targetId, targetUsername || null, targetFirstName || null, message.from.id).run();
+
+    const displayName = targetFirstName || targetId;
+    const usernameStr = targetUsername ? ` (@${targetUsername})` : "";
+    await sendTelegram(env, message.chat.id, `✅ เพิ่ม ${displayName}${usernameStr} เป็นสมาชิกแล้วค่ะ`, message.message_id);
+  } catch (err) {
+    console.error("handleAllowCommand error:", err);
+    await sendTelegram(env, message.chat.id, "เกิดข้อผิดพลาดค่ะ", message.message_id);
+  }
+}
+
+async function handleRevokeCommand(env, message, args) {
+  try {
+    if (message.from.id !== Number(env.BOSS_USER_ID)) {
+      await sendTelegram(env, message.chat.id, "ฟีเจอร์นี้สำหรับผู้ดูแลระบบเท่านั้นค่ะ", message.message_id);
+      return;
+    }
+    let targetId, targetUsername, targetFirstName;
+
+    if (message.reply_to_message?.from && !args.trim()) {
+      const from = message.reply_to_message.from;
+      targetId = from.id;
+      targetUsername = from.username || null;
+      targetFirstName = from.first_name || null;
+    } else if (args.trim()) {
+      targetId = Number(args.trim());
+      if (!targetId || isNaN(targetId)) {
+        await sendTelegram(env, message.chat.id, "Usage: Reply ข้อความแล้วพิมพ์ /revoke หรือ /revoke <user_id>", message.message_id);
+        return;
+      }
+      // Try to get name from DB
+      const existing = await env.DB.prepare(
+        `SELECT username, first_name FROM allowed_users WHERE user_id = ?`
+      ).bind(targetId).first();
+      if (existing) {
+        targetUsername = existing.username;
+        targetFirstName = existing.first_name;
+      }
+    } else {
+      await sendTelegram(env, message.chat.id, "Usage: Reply ข้อความแล้วพิมพ์ /revoke หรือ /revoke <user_id>", message.message_id);
+      return;
+    }
+
+    const result = await env.DB.prepare(
+      `DELETE FROM allowed_users WHERE user_id = ?`
+    ).bind(targetId).run();
+
+    if (result.meta.changes === 0) {
+      await sendTelegram(env, message.chat.id, `ไม่พบ user ID ${targetId} ในรายชื่อสมาชิกค่ะ`, message.message_id);
+      return;
+    }
+
+    const displayName = targetFirstName || targetId;
+    const usernameStr = targetUsername ? ` (@${targetUsername})` : "";
+    await sendTelegram(env, message.chat.id, `❌ ถอดสิทธิ์ ${displayName}${usernameStr} แล้วค่ะ`, message.message_id);
+  } catch (err) {
+    console.error("handleRevokeCommand error:", err);
+    await sendTelegram(env, message.chat.id, "เกิดข้อผิดพลาดค่ะ", message.message_id);
+  }
+}
+
+async function handleUsersCommand(env, message) {
+  try {
+    if (message.from.id !== Number(env.BOSS_USER_ID)) {
+      await sendTelegram(env, message.chat.id, "ฟีเจอร์นี้สำหรับผู้ดูแลระบบเท่านั้นค่ะ", message.message_id);
+      return;
+    }
+    const { results } = await env.DB.prepare(
+      `SELECT user_id, username, first_name, datetime(added_at, '+7 hours') as added_at FROM allowed_users ORDER BY added_at DESC`
+    ).all();
+
+    if (results.length === 0) {
+      await sendTelegram(env, message.chat.id, "ยังไม่มีสมาชิกค่ะ\nใช้ /allow เพื่อเพิ่มสมาชิก", message.message_id);
+      return;
+    }
+
+    let text = `👥 สมาชิกทั้งหมด (${results.length} คน)\n`;
+    for (const u of results) {
+      const name = u.first_name || "ไม่ทราบชื่อ";
+      const uname = u.username ? ` (@${u.username})` : "";
+      const date = u.added_at ? u.added_at.substring(0, 16) : "N/A";
+      text += `\n• ${name}${uname}\n  ID: ${u.user_id} | เพิ่มเมื่อ: ${date}`;
+    }
+    await sendTelegram(env, message.chat.id, text, message.message_id);
+  } catch (err) {
+    console.error("handleUsersCommand error:", err);
+    await sendTelegram(env, message.chat.id, "เกิดข้อผิดพลาดค่ะ", message.message_id);
+  }
+}
+
+// ===== Member AI Chat — simplified, no actions =====
+
+async function handleMemberChat(env, message, botUsername, text, hasMedia) {
+  try {
+    const cleanText = text.replace(new RegExp(`@${botUsername}`, "g"), "").trim();
+    if (!cleanText && !hasMedia) return;
+
+    await sendTyping(env, message.chat.id);
+
+    let context;
+    try {
+      context = await getSmartContext(env.DB, message.chat.id, false, cleanText);
+    } catch (ctxErr) {
+      console.error("getSmartContext (member) FAILED:", ctxErr.message);
+      context = "";
+    }
+
+    // ดึง HTML file
+    const isHtml = message.document?.mime_type === "text/html" ||
+      message.reply_to_message?.document?.mime_type === "text/html";
+    let htmlContent = null;
+    if (isHtml) {
+      const htmlFileId = (message.document?.mime_type === "text/html"
+        ? message.document.file_id
+        : message.reply_to_message?.document?.file_id);
+      if (htmlFileId) {
+        htmlContent = await downloadHtmlFile(env, htmlFileId);
+      }
+    }
+
+    // ดึงรูป/PDF
+    let imageData = null;
+    if (!isHtml) {
+      const fileId =
+        getPhotoFileId(message) ||
+        getPhotoFileId(message.reply_to_message) ||
+        null;
+      if (fileId) {
+        imageData = await downloadPhotoByFileId(env, fileId);
+      }
+      if (imageData?.error === "FILE_TOO_LARGE") {
+        const sizeMB = (imageData.size / 1024 / 1024).toFixed(1);
+        await sendTelegram(env, message.chat.id,
+          `ไฟล์ใหญ่เกินไปค่ะ (${sizeMB}MB) รับได้ไม่เกิน 10MB ค่ะ`,
+          message.message_id);
+        return;
+      }
+      if (!imageData) {
+        imageData = await getRecentPhoto(env, message.chat.id, message.message_id);
+      }
+    }
+
+    let userMessage = cleanText;
+    if (htmlContent?.text) {
+      const truncated = htmlContent.text.substring(0, 8000);
+      userMessage = cleanText
+        ? `[ไฟล์ HTML: ${htmlContent.fileName}]\n${truncated}\n\n${cleanText}`
+        : `[ไฟล์ HTML: ${htmlContent.fileName}]\n${truncated}\n\nสรุปเนื้อหาในไฟล์นี้ให้หน่อย`;
+    }
+    const replyMsg = message.reply_to_message;
+    if (replyMsg && !htmlContent?.text) {
+      const replyContent = replyMsg.text || replyMsg.caption || "";
+      if (replyContent) {
+        const replyFrom = replyMsg.from?.first_name || replyMsg.from?.username || "Unknown";
+        userMessage = `[Reply ถึงข้อความของ ${replyFrom}: "${replyContent}"]\n\n${cleanText}`;
+      }
+    }
+
+    const memberSystemPrompt = `[Role & Identity]
+คุณคือ "Friday" — AI ผู้ช่วยอัจฉริยะ เพศหญิง
+หน้าที่คือช่วยเหลือผู้ใช้ในการวิเคราะห์ข้อมูล ตอบคำถาม และสนับสนุนงานทั่วไป
+
+[Core Personality]
+- Direct & Analytical: ตอบตรงประเด็น กระชับ ชัดเจน
+- ZERO PREAMBLE: เข้าเนื้อหาทันที ไม่เกริ่นนำ
+- Helpful & Professional: สุภาพ เป็นกันเอง พร้อมช่วยเหลือ
+
+[Tone & Voice]
+- เรียกผู้ใช้ว่า "คุณ"
+- ใช้คำลงท้ายผู้หญิง เช่น "ค่ะ" "นะคะ" "คะ"
+- พูดได้ทั้งไทยและอังกฤษ ตามภาษาของผู้ใช้
+- ตอบสั้นกระชับ ไม่พูดซ้ำ
+- Format responses using Telegram HTML. Allowed tags: <b>bold</b>, <i>italic</i>, <code>code</code>, <pre>code block</pre>. Do NOT use Markdown.
+
+[Image Analysis]
+- เมื่อได้รับรูปภาพ ให้อธิบายเฉพาะสิ่งที่เห็นจริงในภาพเท่านั้น
+- ถ้าภาพไม่ชัด ให้บอกตรงๆ
+
+[Context]
+---
+${context}
+---`;
+
+    const model = "gemini-2.5-pro";
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${env.GEMINI_API_KEY}`;
+
+    const parts = [];
+    if (imageData) {
+      parts.push({ inline_data: { mime_type: imageData.mimeType, data: imageData.base64 } });
+    }
+    parts.push({ text: userMessage || "อธิบายรูปนี้ให้หน่อย" });
+
+    const reqBody = JSON.stringify({
+      system_instruction: { parts: [{ text: memberSystemPrompt }] },
+      contents: [{ role: "user", parts }],
+      tools: [{ google_search: {} }],
+      generationConfig: {
+        maxOutputTokens: 8192,
+        thinkingConfig: { thinkingBudget: 2048 },
+      },
+    });
+
+    let response, lastError;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      if (attempt > 0) await new Promise(r => setTimeout(r, 1000 * attempt));
+      try {
+        response = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: reqBody });
+        if (response.ok) break;
+        if ([429, 500, 502, 503].includes(response.status) && attempt < 2) {
+          lastError = `HTTP ${response.status}`;
+          continue;
+        }
+        break;
+      } catch (e) {
+        lastError = e.message;
+        if (attempt === 2) break;
+      }
+    }
+
+    if (!response?.ok) {
+      console.error("Member Gemini error:", lastError);
+      await sendTelegram(env, message.chat.id, "ขออภัยค่ะ ระบบขัดข้อง กรุณาลองใหม่ค่ะ", message.message_id);
+      return;
+    }
+
+    const data = await response.json();
+    const reply = data.candidates?.[0]?.content?.parts
+      ?.filter(p => p.text && !p.thought)
+      ?.map(p => p.text)
+      ?.join("") || "";
+
+    if (reply) {
+      await sendTelegram(env, message.chat.id, reply, message.message_id, true);
+    }
+  } catch (err) {
+    console.error("handleMemberChat error:", err.message, err.stack);
+    await sendTelegram(env, message.chat.id, "เกิดข้อผิดพลาดค่ะ ลองใหม่อีกครั้งนะคะ", message.message_id);
   }
 }
 
