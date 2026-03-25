@@ -162,8 +162,8 @@ export default {
       const isBoss = message.from.id === bossId;
       const isDM = message.chat.type === "private";
 
-      // เก็บทุกข้อความ (ยกเว้นจาก bot เอง)
-      if (!message.from.is_bot) {
+      // เก็บทุกข้อความ (ยกเว้นจาก bot ตัวเอง)
+      if (!(message.from.is_bot && message.from.username === botUsername)) {
         ctx.waitUntil(storeMessage(env.DB, message, text, hasMedia));
       }
 
