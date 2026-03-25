@@ -167,6 +167,26 @@ export default {
         ctx.waitUntil(storeMessage(env.DB, message, text, hasMedia));
       }
 
+      // เก็บข้อความจากบอทอื่นที่ถูก reply (Telegram Bot API ไม่ส่ง bot messages มา webhook)
+      const rtm = message.reply_to_message;
+      if (rtm?.from?.is_bot && rtm.from.username !== botUsername && (rtm.text || rtm.caption)) {
+        ctx.waitUntil((async () => {
+          try {
+            const exists = await env.DB.prepare(
+              `SELECT 1 FROM messages WHERE chat_id = ? AND message_id = ? LIMIT 1`
+            ).bind(message.chat.id, rtm.message_id).first();
+            if (!exists) {
+              await storeMessage(env.DB, {
+                chat: message.chat,
+                from: rtm.from,
+                message_id: rtm.message_id,
+                reply_to_message: null,
+              }, rtm.text || rtm.caption || "", false);
+            }
+          } catch (e) { /* ignore duplicate */ }
+        })());
+      }
+
       // แจ้งเตือนบอสเมื่อมีคนแท็ก/reply/เอ่ยถึงในกลุ่ม
       const mentionType = detectBossMention(message, bossId, env.BOSS_USERNAME, env);
       if (!isDM && !isBoss && mentionType) {
