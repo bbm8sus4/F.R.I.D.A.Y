@@ -400,3 +400,93 @@ export async function getSmartContext(db, chatId, isDM, userQuery) {
 
   return context;
 }
+
+/**
+ * getTargetGroupContext — ดึงบริบทเฉพาะกลุ่มเป้าหมายสำหรับ /send
+ * Single batch, 1 round-trip to D1
+ * Returns: { context, groupName, companyName, participants }
+ */
+export async function getTargetGroupContext(db, targetChatId) {
+  const batchStmts = [
+    // 0: ข้อความล่าสุด 24 ชม. ของกลุ่มเป้าหมาย (80 rows)
+    db.prepare(
+      `SELECT username, first_name, message_text, datetime(created_at, '+7 hours') as created_at, chat_title
+       FROM messages
+       WHERE chat_id = ? AND created_at > datetime('now', '-24 hours')
+       ORDER BY created_at ASC LIMIT 80`
+    ).bind(targetChatId),
+    // 1: สมาชิก active 7 วัน (15 คน)
+    db.prepare(
+      `SELECT username, first_name, COUNT(*) as msg_count
+       FROM messages
+       WHERE chat_id = ? AND created_at > datetime('now', '-7 days') AND username IS NOT NULL
+       GROUP BY username
+       ORDER BY msg_count DESC LIMIT 15`
+    ).bind(targetChatId),
+    // 2: สรุปล่าสุดของกลุ่ม (1 row)
+    db.prepare(
+      `SELECT summary_text, COALESCE(summary_date, week_end) as summary_date,
+              COALESCE(summary_type, 'weekly') as summary_type
+       FROM summaries
+       WHERE chat_id = ?
+       ORDER BY COALESCE(summary_date, week_end) DESC LIMIT 1`
+    ).bind(targetChatId),
+    // 3: ข้อมูลกลุ่มจาก group_registry + companies
+    db.prepare(
+      `SELECT g.chat_title, c.name as company_name
+       FROM group_registry g
+       LEFT JOIN companies c ON g.company_id = c.id
+       WHERE g.chat_id = ?`
+    ).bind(targetChatId),
+    // 4: Hot memories (20 rows)
+    db.prepare(
+      `SELECT id, content, category FROM memories
+       WHERE priority = 'hot'
+       ORDER BY created_at DESC LIMIT 20`
+    ),
+  ];
+
+  const results = await db.batch(batchStmts);
+
+  const recentMessages = results[0].results;
+  const activeMembers = results[1].results;
+  const latestSummary = results[2].results;
+  const groupInfo = results[3].results[0];
+  const hotMemories = results[4].results;
+
+  const groupName = groupInfo?.chat_title || recentMessages[0]?.chat_title || `Group ${targetChatId}`;
+  const companyName = groupInfo?.company_name || null;
+  const participants = activeMembers.map(m => m.username ? `@${m.username}` : m.first_name).filter(Boolean);
+
+  let context = "";
+
+  if (hotMemories.length > 0) {
+    context += "=== คำสั่ง/ความจำถาวรจากบอส ===\n";
+    context += hotMemories.map(m => `[#${m.id}] (${m.category}) ${m.content}`).join("\n");
+    context += "\n\n";
+  }
+
+  if (recentMessages.length > 0) {
+    context += `=== บทสนทนาล่าสุด 24 ชม. ของกลุ่ม "${groupName}" ===\n`;
+    context += formatMessages(recentMessages);
+    context += "\n\n";
+  }
+
+  if (latestSummary.length > 0) {
+    const s = latestSummary[0];
+    context += `=== สรุปล่าสุดของกลุ่ม (${s.summary_type} ${s.summary_date}) ===\n`;
+    context += s.summary_text;
+    context += "\n\n";
+  }
+
+  if (activeMembers.length > 0) {
+    context += "=== สมาชิก active 7 วัน ===\n";
+    context += activeMembers.map(m => {
+      const name = m.username ? `@${m.username}` : m.first_name;
+      return `${name} (${m.msg_count} ข้อความ)`;
+    }).join(", ");
+    context += "\n\n";
+  }
+
+  return { context, groupName, companyName, participants };
+}

@@ -12,7 +12,7 @@ import { storeMessage } from './lib/context.js';
 import { handleApiRequest } from './handlers/api.js';
 import { handleMention, handleMemberChat } from './handlers/mention.js';
 import { handleReadhtmlCommand, handleReadpdfCommand, handleReadimgCommand, handleFileCallback, handleFileAsk, handleReadvoiceCommand, handleReadlinkCommand, handleReadlinkCallback, handleReadlinkAsk } from './handlers/read.js';
-import { handleSendCommand, handleSendCallback, handleSendReply } from './handlers/send.js';
+import { handleSendCommand, handleSendCallback, handleSendReply, handleSendEditReply } from './handlers/send.js';
 import { handleRecapCommand, handleRecapCallback, handleRecapReply } from './handlers/recap.js';
 import { handleDeleteCommand, handleDeleteCallback } from './handlers/delete.js';
 import { handleDashboardCommand, handleTaskCommand, handleTasksCommand, handleDoneCommand, handleCancelCommand, handleTaskCallback } from './handlers/tasks.js';
@@ -384,13 +384,18 @@ export default {
 
         // send: replies — boss only
         if (role === "boss") {
+          // Edit reply: reply to "✏️ แก้ไขข้อความ"
+          if (message.reply_to_message.text.startsWith('✏️ แก้ไขข้อความ')) {
+            ctx.waitUntil(handleSendEditReply(env, message, text));
+            return new Response("OK", { status: 200 });
+          }
+
           if (message.reply_to_message.text.startsWith('📨 สั่ง AI')) {
             try {
               const pending = await env.DB.prepare(
                 `SELECT target_chat_id FROM pending_sends WHERE user_id = ?`
               ).bind(message.chat.id).first();
               if (pending) {
-                await env.DB.prepare(`DELETE FROM pending_sends WHERE user_id = ?`).bind(message.chat.id).run();
                 ctx.waitUntil(handleSendReply(env, message, pending.target_chat_id, text));
                 return new Response("OK", { status: 200 });
               }
