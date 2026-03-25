@@ -1,6 +1,8 @@
 import { sendTelegram, sendTelegramWithKeyboard } from "../lib/telegram.js";
 import { escapeHtml } from "../lib/html-utils.js";
 
+const VALID_CATEGORIES = ["person", "preference", "rule", "project", "task", "general"];
+
 const PAGE_SIZE = 5;
 const TIER_EMOJI = { hot: "🔴", warm: "🟡", cold: "🔵" };
 const TIER_LABEL = { hot: "Hot", warm: "Warm", cold: "Cold" };
@@ -327,19 +329,46 @@ export async function handleMemoryCallback(env, callbackQuery) {
 
 // ===== Original Command Handlers (kept for backward compat) =====
 
+async function autoClassify(env, content) {
+  try {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${env.GEMINI_API_KEY}`;
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: `จัดหมวดข้อความนี้เป็นหนึ่งใน: ${VALID_CATEGORIES.join(", ")}\n\nข้อความ: "${content}"\n\nตอบแค่คำเดียว (ชื่อหมวด):` }] }],
+        generationConfig: { maxOutputTokens: 10, temperature: 0 },
+      }),
+    });
+    if (!res.ok) return "general";
+    const data = await res.json();
+    const answer = (data.candidates?.[0]?.content?.parts?.[0]?.text || "").trim().toLowerCase();
+    return VALID_CATEGORIES.includes(answer) ? answer : "general";
+  } catch (e) {
+    console.error("autoClassify error:", e);
+    return "general";
+  }
+}
+
 export async function handleRememberCommand(env, message, args) {
   try {
     let content = args.trim();
     if (!content) {
-      await sendTelegram(env, message.chat.id, "Usage: /remember <สิ่งที่จะจำ>\nหรือ /remember [category] <สิ่งที่จะจำ>", message.message_id);
+      await sendTelegram(env, message.chat.id, "Usage: /remember <สิ่งที่จะจำ>", message.message_id);
       return;
     }
 
-    let category = "general";
+    // Manual category override: /remember [work] something
+    let category = null;
     const catMatch = content.match(/^\[(\w+)\]\s*([\s\S]*)/);
     if (catMatch) {
       category = catMatch[1];
       content = catMatch[2];
+    }
+
+    // Auto-classify if no manual category
+    if (!category) {
+      category = await autoClassify(env, content);
     }
 
     const { meta } = await env.DB
