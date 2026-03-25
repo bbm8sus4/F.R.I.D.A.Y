@@ -1,5 +1,8 @@
-import { sendTelegram, sendTelegramWithKeyboard } from '../lib/telegram.js';
-import { escapeHtml } from '../lib/html-utils.js';
+import { sendTelegram, sendTelegramWithKeyboard, sendTyping } from '../lib/telegram.js';
+import { escapeHtml, sanitizeHtml } from '../lib/html-utils.js';
+import { getSmartContext } from '../lib/context.js';
+import { askGemini } from '../lib/gemini.js';
+import { parseAndExecuteActions } from '../lib/actions.js';
 
 export function parseSuggestions(text) {
   const strategies = [

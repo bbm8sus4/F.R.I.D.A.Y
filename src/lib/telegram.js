@@ -63,8 +63,8 @@ export async function trackBotMessage(env, chatId, messageId, textPreview) {
 export function getReplyKeyboardMarkup(env) {
   return {
     keyboard: [
-      [{ text: "📝 Tasks" }, { text: "🧠 Memories" }, { text: "📋 Summary" }, { text: "📋 Recap" }],
-      [{ text: "📨 Send" }, { text: "🏢 Company" }, { text: "🗑 Delete" }, ...(env.DASHBOARD_URL ? [{ text: "📊 Dashboard", web_app: { url: env.DASHBOARD_URL } }] : [])],
+      [{ text: "Tasks" }, { text: "Memories" }, { text: "Summary" }, { text: "Recap" }],
+      [{ text: "Send" }, { text: "Company" }, { text: "Delete" }, ...(env.DASHBOARD_URL ? [{ text: "Dashboard", web_app: { url: env.DASHBOARD_URL } }] : [])],
     ],
     resize_keyboard: true,
     is_persistent: true,
@@ -203,9 +203,9 @@ export async function sendMemberReplyKeyboard(env, chatId, firstName) {
       text: `สวัสดีค่ะ ${firstName || ""} 👋\n${env.BOT_NAME || "Friday"} พร้อมช่วยเหลือค่ะ`,
       reply_markup: {
         keyboard: [
-          [{ text: "📝 Tasks" }, { text: "📖 Read Link" }],
-          [{ text: "📋 Recap" }, { text: "🗑 Delete" }],
-          [{ text: "📋 Summary" }],
+          [{ text: "Tasks" }, { text: "Read Link" }],
+          [{ text: "Recap" }, { text: "Delete" }],
+          [{ text: "Summary" }],
         ],
         resize_keyboard: true,
         is_persistent: true,

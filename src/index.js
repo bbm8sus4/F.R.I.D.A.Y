@@ -16,7 +16,7 @@ import { handleSendCommand, handleSendCallback, handleSendReply } from './handle
 import { handleRecapCommand, handleRecapCallback, handleRecapReply } from './handlers/recap.js';
 import { handleDeleteCommand, handleDeleteCallback } from './handlers/delete.js';
 import { handleDashboardCommand, handleTaskCommand, handleTasksCommand, handleDoneCommand, handleCancelCommand, handleTaskCallback } from './handlers/tasks.js';
-import { handleRememberCommand, handleMemoriesCommand, handleForgetCommand, handleCooldownCommand, handleHeatupCommand } from './handlers/memory.js';
+import { handleRememberCommand, handleMemoriesCommand, handleForgetCommand, handleCooldownCommand, handleHeatupCommand, handleMemoryCallback } from './handlers/memory.js';
 import { handleAllowCommand, handleRevokeCommand, handleUsersCommand } from './handlers/members.js';
 import { handleSummaryCommand, handleSummaryCallback, handleSummaryCustomReply } from './handlers/summary.js';
 import { handleCompanyCommand, handleCompanyCallback, handleCompanyReply } from './handlers/company.js';
@@ -110,6 +110,10 @@ export default {
         }
         if (callbackQuery.data?.startsWith("sm:")) {
           ctx.waitUntil(handleSummaryCallback(env, callbackQuery));
+          return new Response("OK", { status: 200 });
+        }
+        if (callbackQuery.data?.startsWith("mem:")) {
+          ctx.waitUntil(handleMemoryCallback(env, callbackQuery));
           return new Response("OK", { status: 200 });
         }
       }
@@ -228,8 +232,8 @@ export default {
               } catch (e) { console.error("Urgent alert DB error:", e); }
               await sendTelegramWithKeyboard(env, bossId, urgentMsg, null, [
                 [
-                  { text: "📋 วิเคราะห์สั้น", callback_data: `pa:s:${message.chat.id}` },
-                  { text: "📝 วิเคราะห์ละเอียด", callback_data: `pa:d:${message.chat.id}` },
+                  { text: "📋 วิเคราะห์สั้น", callback_data: `pa:s:${message.chat.id}:0` },
+                  { text: "📝 วิเคราะห์ละเอียด", callback_data: `pa:d:${message.chat.id}:0` },
                 ],
                 [
                   { text: "✅ จัดการแล้ว", callback_data: `pa:h:${message.chat.id}:0` },
@@ -253,20 +257,20 @@ export default {
       // Reply keyboard shortcuts (DM only)
       if (isDM) {
         const bossShortcutMap = {
-          "🧠 Memories": "/memories",
-          "🗑 Delete": "/delete",
-          "📨 Send": "/send",
-          "📋 Recap": "/recap",
-          "📝 Tasks": "/tasks",
-          "📋 Summary": "/summary",
-          "🏢 Company": "/company",
+          "Memories": "/memories",
+          "Delete": "/delete",
+          "Send": "/send",
+          "Recap": "/recap",
+          "Tasks": "/tasks",
+          "Summary": "/summary",
+          "Company": "/company",
         };
         const memberShortcutMap = {
-          "📝 Tasks": "/tasks",
-          "📖 Read Link": "/readlink",
-          "📋 Recap": "/recap",
-          "🗑 Delete": "/delete",
-          "📋 Summary": "/summary",
+          "Tasks": "/tasks",
+          "Read Link": "/readlink",
+          "Recap": "/recap",
+          "Delete": "/delete",
+          "Summary": "/summary",
         };
         const shortcutMap = role === "boss" ? bossShortcutMap : memberShortcutMap;
         if (shortcutMap[text]) {
