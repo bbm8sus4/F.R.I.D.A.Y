@@ -156,7 +156,7 @@ async function showMemoryList(env, chatId, messageId, filter, offset) {
   // Pagination row
   const navRow = [];
   if (offset > 0) {
-    navRow.push({ text: "◀️", callback_data: `mem:${filterKey === "a" ? "a" : filterKey.includes(":") ? filterKey.replace(":", ":").replace(/^p:/, "p:").replace(/^c:/, "c:") : filterKey}:${offset - PAGE_SIZE}` });
+    navRow.push({ text: "◀️", callback_data: `mem:${filterKey}:${offset - PAGE_SIZE}` });
   }
   navRow.push({ text: `${currentPage}/${totalPages}`, callback_data: "mem:_" });
   if (offset + PAGE_SIZE < total) {
@@ -331,6 +331,9 @@ export async function handleMemoryCallback(env, callbackQuery) {
 
 async function autoClassify(env, content) {
   try {
+    if (!env.GEMINI_API_KEY) return "general";
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5000);
     const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${env.GEMINI_API_KEY}`;
     const res = await fetch(url, {
       method: "POST",
@@ -339,7 +342,9 @@ async function autoClassify(env, content) {
         contents: [{ parts: [{ text: `จัดหมวดข้อความนี้เป็นหนึ่งใน: ${VALID_CATEGORIES.join(", ")}\n\nข้อความ: "${content}"\n\nตอบแค่คำเดียว (ชื่อหมวด):` }] }],
         generationConfig: { maxOutputTokens: 10, temperature: 0 },
       }),
+      signal: controller.signal,
     });
+    clearTimeout(timeout);
     if (!res.ok) return "general";
     const data = await res.json();
     const answer = (data.candidates?.[0]?.content?.parts?.[0]?.text || "").trim().toLowerCase();
