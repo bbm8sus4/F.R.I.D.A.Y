@@ -17,7 +17,7 @@ function cleanAiResponse(text) {
   ).replace(/\n*\s*🔗?\s*แหล่งข้อมูล:?\s*$/, '').replace(/\n{3,}/g, '\n\n').trim();
 }
 
-function buildSendPrompt({ instruction, groupName, companyName, participants, previousDraft, editFeedback }) {
+function buildSendPrompt({ instruction, groupName, companyName, participants, previousDraft, editFeedback, botName }) {
   let prompt = `บอสต้องการให้เขียนข้อความเพื่อส่งไปยังกลุ่ม "${groupName}"`;
   if (companyName) prompt += ` (บริษัท: ${companyName})`;
   prompt += `\n\nคำสั่งจากบอส: ${instruction}`;
@@ -27,7 +27,7 @@ function buildSendPrompt({ instruction, groupName, companyName, participants, pr
   }
 
   prompt += `\n\n=== กฎการเขียน ===
-- เขียนในน้ำเสียงของบอส (ไม่ใช่ AI) — เหมือนบอสพิมพ์เอง
+- เขียนในน้ำเสียงของ ${botName} (ผู้หญิง ใช้ค่ะ/คะ) — ในฐานะผู้ช่วยของบอสที่ส่งข้อความแทน
 - ปรับ tone ให้เหมาะกับบริบทกลุ่ม (ดูจากบทสนทนาล่าสุด)
 - เพิ่มรายละเอียดจากบริบทที่มี ถ้าทำให้ข้อความสมบูรณ์ขึ้น
 - กระชับ ตรงประเด็น ไม่ยืดเยื้อ
@@ -316,6 +316,7 @@ export async function handleSendReply(env, message, targetChatId, msgText) {
       groupName,
       companyName,
       participants,
+      botName: env.BOT_NAME || "Friday",
     });
 
     const aiResponse = await askGemini(env, aiPrompt, context, null);
@@ -369,6 +370,7 @@ export async function handleSendEditReply(env, message, editFeedback) {
       participants,
       previousDraft: pending.draft_text,
       editFeedback,
+      botName: env.BOT_NAME || "Friday",
     });
 
     const aiResponse = await askGemini(env, aiPrompt, context, null);
