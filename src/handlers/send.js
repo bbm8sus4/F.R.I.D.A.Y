@@ -80,7 +80,7 @@ export async function handleSendCommand(env, message, args) {
         WHERE chat_id != ? AND chat_title IS NOT NULL
         GROUP BY chat_id
         ORDER BY last_msg DESC
-        LIMIT 50
+        LIMIT 100
       `).bind(message.chat.id).all();
 
       if (!results.length) {
