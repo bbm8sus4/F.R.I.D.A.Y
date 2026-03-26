@@ -56,7 +56,7 @@ export function isCalendarConfigured(env) {
 
 /**
  * List events in a time range.
- * Returns: [{ id, title, date, time, endTime, description, location }]
+ * Returns: [{ id, title, date, time, endTime, description, location, meetLink, phone }]
  */
 export async function listEvents(env, timeMin, timeMax, maxResults = 20) {
   const token = await getAccessToken(env);
@@ -68,6 +68,7 @@ export async function listEvents(env, timeMin, timeMax, maxResults = 20) {
     singleEvents: "true",
     orderBy: "startTime",
     timeZone: "Asia/Bangkok",
+    conferenceDataVersion: "1",
   });
 
   const res = await fetch(`${CALENDAR_API}/calendars/${calId}/events?${params}`, {
@@ -223,6 +224,17 @@ function formatEvent(event) {
     endTime = "";
   }
 
+  // Extract Meet link and phone dial-in
+  const meetLink = event.hangoutLink || "";
+  let phone = "";
+  if (event.conferenceData?.entryPoints) {
+    const phoneEntry = event.conferenceData.entryPoints.find(ep => ep.entryPointType === "phone");
+    if (phoneEntry) {
+      phone = phoneEntry.label || phoneEntry.uri?.replace("tel:", "") || "";
+      if (phoneEntry.pin) phone += ` PIN: ${phoneEntry.pin}`;
+    }
+  }
+
   return {
     id: event.id,
     title: event.summary || "(ไม่มีชื่อ)",
@@ -231,6 +243,8 @@ function formatEvent(event) {
     endTime,
     description: event.description || "",
     location: event.location || "",
+    meetLink,
+    phone,
   };
 }
 

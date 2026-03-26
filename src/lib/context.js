@@ -242,7 +242,10 @@ export async function getSmartContext(db, chatId, isDM, userQuery, env) {
         context += "=== ปฏิทินนัดหมาย (7 วันข้างหน้า) ===\n";
         for (const e of events) {
           const timeStr = e.time === "ทั้งวัน" ? "ทั้งวัน" : `${e.time}-${e.endTime}`;
-          context += `📅 ${e.date} ${timeStr} — ${e.title} [eventId:${e.id}]\n`;
+          let line = `📅 ${e.date} ${timeStr} — ${e.title} [eventId:${e.id}]`;
+          if (e.location) line += ` 📍${e.location}`;
+          if (e.meetLink) line += ` 🔗${e.meetLink}`;
+          context += line + "\n";
         }
         context += "\n";
       }

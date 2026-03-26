@@ -31,9 +31,9 @@ export async function calendarReminder(env) {
     for (const e of newEvents) {
       const timeRange = e.endTime ? `${e.time}-${e.endTime}` : e.time;
       msg += `\n📅 ${timeRange} ${escapeHtml(e.title)}`;
-      if (e.location) {
-        msg += `\n📍 ${escapeHtml(e.location)}`;
-      }
+      if (e.location) msg += `\n📍 ${escapeHtml(e.location)}`;
+      if (e.meetLink) msg += `\n🔗 <a href="${escapeHtml(e.meetLink)}">Google Meet</a>`;
+      if (e.phone) msg += `\n📞 ${escapeHtml(e.phone)}`;
     }
 
     await sendTelegram(env, env.BOSS_USER_ID, msg, null, true);

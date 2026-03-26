@@ -254,6 +254,9 @@ function formatEventList(events, label) {
     }
     const timeStr = e.time === "ทั้งวัน" ? "ทั้งวัน" : `${e.time}-${e.endTime}`;
     text += `• ${timeStr} ${escapeHtml(e.title)}\n`;
+    if (e.location) text += `  📍 ${escapeHtml(e.location)}\n`;
+    if (e.meetLink) text += `  🔗 <a href="${escapeHtml(e.meetLink)}">Google Meet</a>\n`;
+    if (e.phone) text += `  📞 ${escapeHtml(e.phone)}\n`;
   }
 
   return text;
