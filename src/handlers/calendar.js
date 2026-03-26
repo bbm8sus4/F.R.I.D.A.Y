@@ -253,10 +253,28 @@ function formatEventList(events, label) {
       text += `\n<b>วัน${dayThai} ${d.getDate()} ${monthThai}</b>\n`;
     }
     const timeStr = e.time === "ทั้งวัน" ? "ทั้งวัน" : `${e.time}-${e.endTime}`;
-    text += `• ${timeStr} ${escapeHtml(e.title)}\n`;
+    text += `• ${timeStr} ${escapeHtml(e.title)}`;
+    if (e.status) text += ` [${e.status}]`;
+    text += "\n";
+    if (e.description) text += `  📝 ${escapeHtml(e.description.slice(0, 100))}${e.description.length > 100 ? "..." : ""}\n`;
     if (e.location) text += `  📍 ${escapeHtml(e.location)}\n`;
     if (e.meetLink) text += `  🔗 <a href="${escapeHtml(e.meetLink)}">Google Meet</a>\n`;
     if (e.phone) text += `  📞 ${escapeHtml(e.phone)}\n`;
+    if (e.organizer) text += `  👤 จัดโดย: ${escapeHtml(e.organizer)}\n`;
+    if (e.attendees?.length) {
+      const attendeeList = e.attendees
+        .filter(a => !a.self)
+        .map(a => {
+          const icon = a.status === "accepted" ? "✅" : a.status === "declined" ? "❌" : a.status === "tentative" ? "❓" : "⏳";
+          return `${icon}${escapeHtml(a.name)}`;
+        });
+      if (attendeeList.length) text += `  👥 ${attendeeList.join(", ")}\n`;
+    }
+    if (e.attachments?.length) {
+      for (const att of e.attachments) {
+        text += `  📎 <a href="${escapeHtml(att.url)}">${escapeHtml(att.title)}</a>\n`;
+      }
+    }
   }
 
   return text;

@@ -224,28 +224,73 @@ function formatEvent(event) {
     endTime = "";
   }
 
-  // Extract Meet link and phone dial-in
-  const meetLink = event.hangoutLink || "";
-  let phone = "";
-  if (event.conferenceData?.entryPoints) {
-    const phoneEntry = event.conferenceData.entryPoints.find(ep => ep.entryPointType === "phone");
-    if (phoneEntry) {
-      phone = phoneEntry.label || phoneEntry.uri?.replace("tel:", "") || "";
-      if (phoneEntry.pin) phone += ` PIN: ${phoneEntry.pin}`;
-    }
-  }
-
-  return {
+  // Build full event object — only include fields that have data
+  const result = {
     id: event.id,
     title: event.summary || "(ไม่มีชื่อ)",
     date,
     time,
     endTime,
-    description: event.description || "",
-    location: event.location || "",
-    meetLink,
-    phone,
   };
+
+  if (event.description) result.description = event.description;
+  if (event.location) result.location = event.location;
+  if (event.htmlLink) result.htmlLink = event.htmlLink;
+  if (event.status && event.status !== "confirmed") result.status = event.status;
+  if (event.colorId) result.colorId = event.colorId;
+  if (event.transparency) result.transparency = event.transparency;
+  if (event.visibility && event.visibility !== "default") result.visibility = event.visibility;
+  if (event.recurrence?.length) result.recurrence = event.recurrence;
+  if (event.recurringEventId) result.recurringEventId = event.recurringEventId;
+
+  // Creator & Organizer (skip if self-organized)
+  if (event.creator && !event.creator.self) {
+    result.creator = event.creator.displayName || event.creator.email;
+  }
+  if (event.organizer && !event.organizer.self) {
+    result.organizer = event.organizer.displayName || event.organizer.email;
+  }
+
+  // Attendees
+  if (event.attendees?.length) {
+    result.attendees = event.attendees.map(a => ({
+      name: a.displayName || a.email,
+      email: a.email,
+      status: a.responseStatus, // needsAction/declined/tentative/accepted
+      ...(a.organizer && { organizer: true }),
+      ...(a.self && { self: true }),
+    }));
+  }
+
+  // Google Meet / Conference
+  if (event.hangoutLink) result.meetLink = event.hangoutLink;
+  if (event.conferenceData?.entryPoints) {
+    const entries = event.conferenceData.entryPoints;
+    const videoEntry = entries.find(ep => ep.entryPointType === "video");
+    const phoneEntry = entries.find(ep => ep.entryPointType === "phone");
+    if (videoEntry && !result.meetLink) result.meetLink = videoEntry.uri;
+    if (phoneEntry) {
+      let phone = phoneEntry.label || phoneEntry.uri?.replace("tel:", "") || "";
+      if (phoneEntry.pin) phone += ` PIN: ${phoneEntry.pin}`;
+      result.phone = phone;
+    }
+  }
+
+  // Attachments
+  if (event.attachments?.length) {
+    result.attachments = event.attachments.map(a => ({
+      title: a.title,
+      url: a.fileUrl,
+      mimeType: a.mimeType,
+    }));
+  }
+
+  // Reminders
+  if (event.reminders && !event.reminders.useDefault && event.reminders.overrides?.length) {
+    result.reminders = event.reminders.overrides.map(r => `${r.method} ${r.minutes}m`);
+  }
+
+  return result;
 }
 
 function toBangkokTime(isoString) {

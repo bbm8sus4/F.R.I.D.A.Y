@@ -245,6 +245,12 @@ export async function getSmartContext(db, chatId, isDM, userQuery, env) {
           let line = `📅 ${e.date} ${timeStr} — ${e.title} [eventId:${e.id}]`;
           if (e.location) line += ` 📍${e.location}`;
           if (e.meetLink) line += ` 🔗${e.meetLink}`;
+          if (e.organizer) line += ` 👤${e.organizer}`;
+          if (e.attendees?.length) {
+            const names = e.attendees.filter(a => !a.self).map(a => `${a.name}(${a.status})`);
+            if (names.length) line += ` 👥${names.join(",")}`;
+          }
+          if (e.description) line += ` 📝${e.description.slice(0, 80)}`;
           context += line + "\n";
         }
         context += "\n";

@@ -34,6 +34,11 @@ export async function calendarReminder(env) {
       if (e.location) msg += `\n📍 ${escapeHtml(e.location)}`;
       if (e.meetLink) msg += `\n🔗 <a href="${escapeHtml(e.meetLink)}">Google Meet</a>`;
       if (e.phone) msg += `\n📞 ${escapeHtml(e.phone)}`;
+      if (e.organizer) msg += `\n👤 ${escapeHtml(e.organizer)}`;
+      if (e.attendees?.length) {
+        const names = e.attendees.filter(a => !a.self).map(a => a.name);
+        if (names.length) msg += `\n👥 ${escapeHtml(names.join(", "))}`;
+      }
     }
 
     await sendTelegram(env, env.BOSS_USER_ID, msg, null, true);
