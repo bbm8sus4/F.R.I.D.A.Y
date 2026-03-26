@@ -254,7 +254,7 @@ function formatEventList(events, label) {
     }
     const timeStr = e.time === "ทั้งวัน" ? "ทั้งวัน" : `${e.time}-${e.endTime}`;
     text += `• ${timeStr} ${escapeHtml(e.title)}`;
-    if (e.status) text += ` [${e.status}]`;
+    if (e.status) text += ` [${escapeHtml(e.status)}]`;
     text += "\n";
     if (e.description) text += `  📝 ${escapeHtml(e.description.slice(0, 100))}${e.description.length > 100 ? "..." : ""}\n`;
     if (e.location) text += `  📍 ${escapeHtml(e.location)}\n`;

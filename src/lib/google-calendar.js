@@ -56,7 +56,9 @@ export function isCalendarConfigured(env) {
 
 /**
  * List events in a time range.
- * Returns: [{ id, title, date, time, endTime, description, location, meetLink, phone }]
+ * Returns: [{ id, title, date, time, endTime, ...optional: description, location, htmlLink,
+ *   status, colorId, transparency, visibility, recurrence, creator, organizer,
+ *   attendees, meetLink, phone, attachments, reminders }]
  */
 export async function listEvents(env, timeMin, timeMax, maxResults = 20) {
   const token = await getAccessToken(env);
@@ -92,7 +94,7 @@ export async function getEvent(env, eventId) {
   const token = await getAccessToken(env);
   const calId = encodeURIComponent(env.GOOGLE_CALENDAR_ID || "primary");
 
-  const res = await fetch(`${CALENDAR_API}/calendars/${calId}/events/${encodeURIComponent(eventId)}`, {
+  const res = await fetch(`${CALENDAR_API}/calendars/${calId}/events/${encodeURIComponent(eventId)}?conferenceDataVersion=1`, {
     headers: { Authorization: `Bearer ${token}` },
   });
 
