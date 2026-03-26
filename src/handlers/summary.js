@@ -6,13 +6,16 @@ export async function handleSummaryCommand(env, message, args) {
     const isDM = message.chat.type === "private";
     const parts = args.trim().split(/\s+/);
 
-    if (parts[0] === "backfill") {
-      // /summary backfill — generate daily summaries for all missing dates (default last 7 days)
+    if (parts[0] === "backfill" || parts[0] === "regen") {
+      // /summary backfill — generate daily summaries for missing dates (default last 7 days)
       // /summary backfill 2026-03-18 — from specific date
+      // /summary regen — regenerate ALL (delete existing + recreate, default last 7 days)
+      // /summary regen 2026-03-18 — regenerate from specific date
+      const forceRegen = parts[0] === "regen";
       const fromDate = parts[1] || null;
       const daysBack = fromDate ? null : 7;
 
-      await sendTelegram(env, chatId, "⏳ กำลัง backfill daily summaries... รอสักครู่ค่ะนาย", message.message_id);
+      await sendTelegram(env, chatId, forceRegen ? "⏳ กำลัง regenerate daily summaries... รอสักครู่ค่ะนาย" : "⏳ กำลัง backfill daily summaries... รอสักครู่ค่ะนาย", message.message_id);
 
       // Find all group × date combos with messages but no daily summary
       let query, bindParams;
@@ -43,7 +46,10 @@ export async function handleSummaryCommand(env, message, args) {
           `SELECT id FROM summaries WHERE chat_id = ? AND summary_type = 'daily' AND summary_date = ?`
         ).bind(combo.chat_id, combo.msg_date).first();
 
-        if (existing) { skipped++; continue; }
+        if (existing && !forceRegen) { skipped++; continue; }
+        if (existing && forceRegen) {
+          await env.DB.prepare(`DELETE FROM summaries WHERE id = ?`).bind(existing.id).run();
+        }
 
         // Get messages for this group × date
         const { results: dayMessages } = await env.DB.prepare(
@@ -75,8 +81,8 @@ export async function handleSummaryCommand(env, message, args) {
         }
       }
 
-      let reply = `✅ Backfill เสร็จแล้วค่ะนาย\n\n`;
-      reply += `สร้างใหม่: ${created} | ข้าม (มีแล้ว): ${skipped} | ล้มเหลว: ${failed}\n\n`;
+      let reply = forceRegen ? `✅ Regen เสร็จแล้วค่ะนาย\n\n` : `✅ Backfill เสร็จแล้วค่ะนาย\n\n`;
+      reply += `สร้างใหม่: ${created} | ข้าม: ${skipped} | ล้มเหลว: ${failed}\n\n`;
       if (processed.length > 0) {
         reply += processed.join("\n") + "\n\n";
       }
@@ -112,7 +118,7 @@ export async function handleSummaryCommand(env, message, args) {
       for (const s of results) {
         const typeLabel = s.summary_type === "daily" ? "📅" : "📆";
         reply += `${typeLabel} ${s.summary_date} | ${s.chat_title} (${s.message_count} msg)\n`;
-        reply += truncate(s.summary_text, searchMaxLen) + "\n\n";
+        reply += truncate(cleanSummaryText(s.summary_text), searchMaxLen) + "\n\n";
       }
       await sendTelegram(env, chatId, reply.trim(), message.message_id);
     } else if (isDM && !parseInt(parts[0])) {
@@ -290,13 +296,51 @@ export function summaryDayButtons(activeDays, groupChatId) {
 // Dynamic truncation: allocate text budget per entry based on count
 // Telegram limit = 4096, reserve ~200 for header/buttons, ~100 per entry for metadata line
 function maxTextPerEntry(count) {
-  if (count <= 0) return 800;
-  const available = 3800 - (count * 80); // header overhead per entry
-  return Math.max(200, Math.min(1500, Math.floor(available / count)));
+  if (count <= 0) return 3500;
+  const available = 3900 - (count * 30);
+  return Math.max(500, Math.min(3500, Math.floor(available / count)));
 }
 
 function truncate(text, limit) {
   return text.length > limit ? text.substring(0, limit) + "..." : text;
+}
+
+// Strip verbose headers, markdown, category labels from summary text
+function cleanSummaryText(text) {
+  // Strip markdown
+  let cleaned = text.replace(/\*\*/g, "").replace(/^#{1,3}\s+/gm, "");
+
+  const lines = cleaned.split("\n");
+
+  // Category headers from old prompt format — strip entirely
+  const categoryHeader = /^(\d+\.\s*)?(หัวข้อหลัก|การตัดสินใจ|งานที่มอบหมาย|ตัวเลข.{0,5}จำนวน|ปัญหาหรือข้อกังวล|ข้อมูลสำคัญอื่น)/;
+  const introLine = /^(สรุป|บทสนทนา)/;
+  const fillerLine = /^ไม่มี(ปัญหา|ข้อมูล|ตัวเลข|งาน|เรื่อง|ข้อกังวล)/;
+  const trailingLine = /^(สรุป(โดย)?รวม|โดยสรุป|---)/;
+
+  const result = [];
+  let num = 1;
+  for (const line of lines) {
+    const t = line.trim();
+    if (!t || t.length < 5) continue;
+    if (categoryHeader.test(t)) continue;
+    if (introLine.test(t)) continue;
+    if (fillerLine.test(t)) continue;
+    if (trailingLine.test(t)) continue;
+
+    // Strip bullet/number/sub-bullet prefix
+    let content = t.replace(/^[\*\-•]\s*/, "").replace(/^\d+\.\s*/, "").trim();
+    if (!content || content.length < 5) continue;
+
+    if (content.startsWith("⚠️")) {
+      result.push(content);
+    } else {
+      result.push(`${num}. ${content}`);
+      num++;
+    }
+  }
+
+  return result.length > 0 ? result.join("\n") : text.trim();
 }
 
 // --- Build Summary Listing ---
@@ -363,13 +407,13 @@ export async function buildSummaryListing(env, chatId, isDM, days, companyFilter
         }
         const typeLabel = s.summary_type === "daily" ? "📅" : "📆";
         reply += `${typeLabel} ${s.summary_date} | ${s.chat_title} (${s.message_count} msg)\n`;
-        reply += truncate(s.summary_text, maxLen) + "\n\n";
+        reply += truncate(cleanSummaryText(s.summary_text), maxLen) + "\n\n";
       }
     } else {
       for (const s of results) {
         const typeLabel = s.summary_type === "daily" ? "📅" : "📆";
         reply += `${typeLabel} ${s.summary_date} | ${s.chat_title} (${s.message_count} msg)\n`;
-        reply += truncate(s.summary_text, maxLen) + "\n\n";
+        reply += truncate(cleanSummaryText(s.summary_text), maxLen) + "\n\n";
       }
     }
     return { text: reply.trim(), buttons };
@@ -401,7 +445,7 @@ export async function buildSummaryListing(env, chatId, isDM, days, companyFilter
   for (const s of results) {
     const typeLabel = s.summary_type === "daily" ? "📅" : "📆";
     reply += `${typeLabel} ${s.summary_date} | ${s.chat_title} (${s.message_count} msg)\n`;
-    reply += truncate(s.summary_text, maxLen) + "\n\n";
+    reply += truncate(cleanSummaryText(s.summary_text), maxLen) + "\n\n";
   }
   return { text: reply.trim(), buttons: summaryDayButtons(days, groupChatId) };
 }
@@ -529,16 +573,20 @@ export async function handleSummaryCustomReply(env, message, companyFilter, text
 // --- Gemini Summary Generators ---
 
 export async function generateDailySummary(env, groupTitle, conversationText, dateStr) {
-  const prompt = `สรุปบทสนทนาของกลุ่ม "${groupTitle}" วันที่ ${dateStr} อย่างละเอียด เน้น:
-1. หัวข้อหลักที่คุยกัน — แต่ละหัวข้อสรุปประเด็นสำคัญ
-2. การตัดสินใจสำคัญ — ใครตัดสินใจอะไร เหตุผล
-3. งานที่มอบหมาย — ใคร ทำอะไร เมื่อไหร่ สถานะ
-4. ตัวเลข/จำนวนเงินสำคัญ — ยอด ราคา จำนวน
-5. ปัญหาหรือข้อกังวลที่ยังค้าง — อะไรยังไม่ได้แก้
-6. ข้อมูลสำคัญอื่นๆ — ชื่อคน สถานที่ ลิงก์ รหัสอ้างอิง ที่อาจต้องใช้ภายหลัง
+  const prompt = `สรุปเป็นชื่อเรื่องสั้น ๆ ที่เกิดขึ้น ข้อละไม่เกิน 15 คำ
 
-ถ้าไม่มีเรื่องสำคัญเลย ให้สรุปสั้นๆ 2-3 ประโยคว่าคุยเรื่องอะไร
-ตอบเป็นภาษาไทย ละเอียดแต่กระชับ ไม่เกิน 1500 คำ`;
+กฎ:
+- เขียนแค่ชื่อเรื่อง/เหตุการณ์สั้น ๆ ไม่ต้องอธิบาย
+- ใส่ชื่อคน ตัวเลข วันที่ ที่สำคัญ
+- ปัญหาค้างใช้ ⚠️ นำหน้า
+- ห้ามบทนำ ห้ามหัวข้อหมวด ห้าม markdown ห้ามสรุปท้าย
+- ตอบภาษาไทย
+
+ตัวอย่าง:
+1. นัดอัพเดต Flex Theme 31 มี.ค. (Bank)
+2. ลูกค้า ABC สั่ง 500 ชิ้น 250,000 บาท
+3. ส่งของล่าช้า 3 วัน แก้แล้ว
+⚠️ ยังไม่ได้ใบ PO จาก XYZ`;
 
   const model = "gemini-2.5-flash";
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${env.GEMINI_API_KEY}`;
@@ -549,7 +597,7 @@ export async function generateDailySummary(env, groupTitle, conversationText, da
     body: JSON.stringify({
       system_instruction: { parts: [{ text: prompt }] },
       contents: [{ role: "user", parts: [{ text: conversationText }] }],
-      generationConfig: { maxOutputTokens: 4096 },
+      generationConfig: { maxOutputTokens: 1024 },
     }),
   });
 
@@ -569,15 +617,14 @@ export async function generateDailySummary(env, groupTitle, conversationText, da
 }
 
 export async function generateSummary(env, groupTitle, conversationText) {
-  const prompt = `สรุปบทสนทนาของกลุ่ม "${groupTitle}" ให้กระชับที่สุด เน้น:
-1. หัวข้อหลักที่คุยกัน
-2. การตัดสินใจสำคัญ
-3. งานที่มอบหมาย (ใคร ทำอะไร เมื่อไหร่)
-4. ตัวเลข/จำนวนเงินสำคัญ
-5. ปัญหาหรือข้อกังวลที่ยังค้าง
+  const prompt = `สรุปเป็นชื่อเรื่องสั้น ๆ ที่เกิดขึ้น ข้อละไม่เกิน 15 คำ (สรุปรายสัปดาห์)
 
-ถ้าไม่มีเรื่องสำคัญเลย ให้สรุปสั้นๆ 1-2 ประโยคว่าคุยเรื่องอะไร
-ตอบเป็นภาษาไทย กระชับ ไม่เกิน 500 คำ`;
+กฎ:
+- เขียนแค่ชื่อเรื่อง/เหตุการณ์สั้น ๆ ไม่ต้องอธิบาย
+- ใส่ชื่อคน ตัวเลข วันที่ ที่สำคัญ
+- ปัญหาค้างใช้ ⚠️ นำหน้า
+- ห้ามบทนำ ห้ามหัวข้อหมวด ห้าม markdown ห้ามสรุปท้าย
+- ตอบภาษาไทย`;
 
   const model = "gemini-2.5-flash";
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${env.GEMINI_API_KEY}`;
@@ -588,7 +635,7 @@ export async function generateSummary(env, groupTitle, conversationText) {
     body: JSON.stringify({
       system_instruction: { parts: [{ text: prompt }] },
       contents: [{ role: "user", parts: [{ text: conversationText }] }],
-      generationConfig: { maxOutputTokens: 2048 },
+      generationConfig: { maxOutputTokens: 1024 },
     }),
   });
 
