@@ -1,5 +1,6 @@
 import { STOP_WORDS } from './constants.js';
 import { getPhotoFileId } from './media.js';
+import { listEvents, isCalendarConfigured } from './google-calendar.js';
 
 export async function storeMessage(db, message, text, hasMedia) {
   try {
@@ -107,7 +108,7 @@ export function formatMessages(rows) {
     .join("\n");
 }
 
-export async function getSmartContext(db, chatId, isDM, userQuery) {
+export async function getSmartContext(db, chatId, isDM, userQuery, env) {
   // ===== Batch 1 — ดึงทุกครั้ง (1 round-trip) =====
   const memoriesStmt = db.prepare(
     `SELECT id, content, category, priority, created_at FROM memories
@@ -224,6 +225,29 @@ export async function getSmartContext(db, chatId, isDM, userQuery) {
         })
         .join("\n");
       context += "\n\n";
+    }
+  }
+
+  // ===== Calendar — ดึงนัดหมาย 7 วันข้างหน้า (ถ้า configured) =====
+  if (isDM && env && isCalendarConfigured(env)) {
+    try {
+      const now = new Date();
+      const bangkokNow = new Date(now.getTime() + 7 * 3600000);
+      const todayStr = bangkokNow.toISOString().slice(0, 10);
+      const next7 = new Date(bangkokNow);
+      next7.setUTCDate(next7.getUTCDate() + 7);
+      const endStr = next7.toISOString().slice(0, 10);
+      const events = await listEvents(env, `${todayStr}T00:00:00+07:00`, `${endStr}T23:59:59+07:00`, 15);
+      if (events.length > 0) {
+        context += "=== ปฏิทินนัดหมาย (7 วันข้างหน้า) ===\n";
+        for (const e of events) {
+          const timeStr = e.time === "ทั้งวัน" ? "ทั้งวัน" : `${e.time}-${e.endTime}`;
+          context += `📅 ${e.date} ${timeStr} — ${e.title} [eventId:${e.id}]\n`;
+        }
+        context += "\n";
+      }
+    } catch (calErr) {
+      console.error("Calendar context fetch failed (non-fatal):", calErr.message);
     }
   }
 

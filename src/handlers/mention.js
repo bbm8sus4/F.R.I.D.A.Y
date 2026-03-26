@@ -13,7 +13,7 @@ export async function handleMention(env, message, botUsername, text, hasMedia, i
 
     let context;
     try {
-      context = await getSmartContext(env.DB, message.chat.id, isDM, cleanText);
+      context = await getSmartContext(env.DB, message.chat.id, isDM, cleanText, env);
     } catch (ctxErr) {
       console.error("getSmartContext FAILED:", ctxErr.message, ctxErr.stack);
       context = "";

@@ -20,12 +20,14 @@ import { handleRememberCommand, handleMemoriesCommand, handleForgetCommand, hand
 import { handleAllowCommand, handleRevokeCommand, handleUsersCommand } from './handlers/members.js';
 import { handleSummaryCommand, handleSummaryCallback, handleSummaryCustomReply } from './handlers/summary.js';
 import { handleCompanyCommand, handleCompanyCallback, handleCompanyReply } from './handlers/company.js';
+import { handleCalendarCommand, handleCalendarCallback } from './handlers/calendar.js';
 
 // === Cron imports ===
 import { proactiveAlert } from './cron/proactive-alert.js';
 import { proactiveInsightAlert } from './cron/proactive-insight.js';
 import { handleProactiveAlertCallback } from './cron/alert-callback.js';
 import { summarizeAndCleanup } from './cron/summarize-cleanup.js';
+import { calendarReminder } from './cron/calendar-reminder.js';
 
 // In-memory throttle for urgent real-time alerts (per-group, 30 min cooldown)
 const urgentThrottleMap = new Map();
@@ -114,6 +116,10 @@ export default {
         }
         if (callbackQuery.data?.startsWith("mem:")) {
           ctx.waitUntil(handleMemoryCallback(env, callbackQuery));
+          return new Response("OK", { status: 200 });
+        }
+        if (callbackQuery.data?.startsWith("cl:")) {
+          ctx.waitUntil(handleCalendarCallback(env, callbackQuery));
           return new Response("OK", { status: 200 });
         }
       }
@@ -339,6 +345,7 @@ export default {
           "/revoke": () => handleRevokeCommand(env, message, parsed.args),
           "/users": () => handleUsersCommand(env, message),
           "/company": () => handleCompanyCommand(env, message),
+          "/cal": () => handleCalendarCommand(env, message, parsed.args),
         };
 
         const handler = handlers[parsed.cmd];
@@ -454,6 +461,6 @@ export default {
 
   // ===== Cron Trigger — Proactive Alert + Cleanup ทุก 3 ชม. =====
   async scheduled(event, env, ctx) {
-    ctx.waitUntil(Promise.all([proactiveAlert(env), proactiveInsightAlert(env), summarizeAndCleanup(env)]));
+    ctx.waitUntil(Promise.all([proactiveAlert(env), proactiveInsightAlert(env), summarizeAndCleanup(env), calendarReminder(env)]));
   },
 };
