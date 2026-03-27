@@ -11,6 +11,8 @@ import { storeMessage } from './lib/context.js';
 // === Handler imports ===
 import { handleApiRequest } from './handlers/api.js';
 import { handleMention, handleMemberChat } from './handlers/mention.js';
+import { handleSecretary, handleSecretaryContinue, handleSecretaryCallback } from './handlers/secretary.js';
+import { getActiveConversation } from './secretary/conversation.js';
 import { handleReadhtmlCommand, handleReadpdfCommand, handleReadimgCommand, handleFileCallback, handleFileAsk, handleReadvoiceCommand, handleReadlinkCommand, handleReadlinkCallback, handleReadlinkAsk } from './handlers/read.js';
 import { handleSendCommand, handleSendCallback, handleSendReply, handleSendEditReply } from './handlers/send.js';
 import { handleRecapCommand, handleRecapCallback, handleRecapReply } from './handlers/recap.js';
@@ -28,6 +30,8 @@ import { proactiveInsightAlert } from './cron/proactive-insight.js';
 import { handleProactiveAlertCallback } from './cron/alert-callback.js';
 import { summarizeAndCleanup } from './cron/summarize-cleanup.js';
 import { calendarReminder } from './cron/calendar-reminder.js';
+import { dailyDigest } from './cron/daily-digest.js';
+import { conversationCleanup } from './cron/conversation-cleanup.js';
 
 // In-memory throttle for urgent real-time alerts (per-group, 30 min cooldown)
 const urgentThrottleMap = new Map();
@@ -120,6 +124,10 @@ export default {
         }
         if (callbackQuery.data?.startsWith("cl:")) {
           ctx.waitUntil(handleCalendarCallback(env, callbackQuery));
+          return new Response("OK", { status: 200 });
+        }
+        if (callbackQuery.data?.startsWith("sec:")) {
+          ctx.waitUntil(handleSecretaryCallback(env, callbackQuery));
           return new Response("OK", { status: 200 });
         }
       }
@@ -339,8 +347,8 @@ export default {
           "/tasks": () => handleTasksCommand(env, message),
           "/done": () => handleDoneCommand(env, message, parsed.args),
           "/cancel": () => handleCancelCommand(env, message, parsed.args),
-          "/menu": () => role === "boss" ? sendReplyKeyboard(env, message.chat.id) : sendMemberReplyKeyboard(env, message.chat.id, message.from.first_name),
-          "/start": () => role === "boss" ? sendReplyKeyboard(env, message.chat.id) : sendMemberReplyKeyboard(env, message.chat.id, message.from.first_name),
+          "/menu": () => role === "boss" ? sendReplyKeyboard(env, message.chat.id, message.message_id) : sendMemberReplyKeyboard(env, message.chat.id, message.from.first_name, message.message_id),
+          "/start": () => role === "boss" ? sendReplyKeyboard(env, message.chat.id, message.message_id) : sendMemberReplyKeyboard(env, message.chat.id, message.from.first_name, message.message_id),
           "/allow": () => handleAllowCommand(env, message, parsed.args),
           "/revoke": () => handleRevokeCommand(env, message, parsed.args),
           "/users": () => handleUsersCommand(env, message),
@@ -443,10 +451,16 @@ export default {
       }
 
       // ตอบเมื่อ mention หรือ DM — แยก boss vs member
+      // Boss: ใช้ secretary layer (tool calling) สำหรับทุกข้อความ
+      // Member: ตรวจ active conversation ก่อน ถ้ามีใช้ secretary continue, ถ้าไม่มีใช้ handleMemberChat
       const isMentioned = text.includes(`@${botUsername}`) || isDM || isReplyToBot;
       if (isMentioned) {
-        if (role === "boss") {
-          ctx.waitUntil(handleMention(env, message, botUsername, text, hasMedia, isDM));
+        // Check for active conversation state (clarification/confirmation in progress)
+        const activeConvo = await getActiveConversation(env.DB, message.chat.id, message.from.id);
+        if (activeConvo) {
+          ctx.waitUntil(handleSecretaryContinue(env, message, activeConvo, text, isDM));
+        } else if (role === "boss") {
+          ctx.waitUntil(handleSecretary(env, message, botUsername, text, hasMedia, isDM));
         } else if (role === "member") {
           ctx.waitUntil(handleMemberChat(env, message, botUsername, text, hasMedia));
         }
@@ -461,6 +475,6 @@ export default {
 
   // ===== Cron Trigger — Proactive Alert + Cleanup ทุก 3 ชม. =====
   async scheduled(event, env, ctx) {
-    ctx.waitUntil(Promise.all([proactiveAlert(env), proactiveInsightAlert(env), summarizeAndCleanup(env), calendarReminder(env)]));
+    ctx.waitUntil(Promise.all([proactiveAlert(env), proactiveInsightAlert(env), summarizeAndCleanup(env), calendarReminder(env), dailyDigest(env), conversationCleanup(env)]));
   },
 };

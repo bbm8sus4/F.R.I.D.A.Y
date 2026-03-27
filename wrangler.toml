@@ -13,6 +13,10 @@ migrations_dir = "migrations"
 DASHBOARD_URL = "https://friday-dashboard-3rf.pages.dev"
 BOT_NAME = "Friday"
 BOSS_NICKNAMES = '["บ๊อบ","บ๊อบบี้","จารย์บ๊อบ","พี่บ๊อบ","ครับบ๊อบ","บ๊อบครับ","พ่อใหญ่บ๊อบ","bob"]'
+GEMINI_MODEL = "gemini-2.5-flash"
+GEMINI_FALLBACK_MODEL = "gemini-2.5-pro"
+GEMINI_TEMPERATURE = "0.2"
+GEMINI_MAX_RETRIES = "2"
 
 [triggers]
 crons = ["0 */3 * * *"]
@@ -32,6 +36,10 @@ DASHBOARD_URL = ""
 BOT_NAME = "Daisy"
 BOSS_TITLE = "นาย"
 BOSS_NICKNAMES = '["วุทธ","พี่วุทธ","วุฒิ","woot","W","วัชรินทร์","Watcharin","Woot"]'
+GEMINI_MODEL = "gemini-2.5-flash"
+GEMINI_FALLBACK_MODEL = "gemini-2.5-pro"
+GEMINI_TEMPERATURE = "0.2"
+GEMINI_MAX_RETRIES = "2"
 
 [env.daisy.triggers]
 crons = ["0 */3 * * *"]

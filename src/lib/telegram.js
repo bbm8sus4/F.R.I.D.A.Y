@@ -68,6 +68,7 @@ export function getReplyKeyboardMarkup(env) {
     ],
     resize_keyboard: true,
     is_persistent: true,
+    selective: true,
   };
 }
 
@@ -182,25 +183,27 @@ export async function sendTelegramWithKeyboard(env, chatId, text, replyToMessage
   }
 }
 
-export async function sendReplyKeyboard(env, chatId) {
+export async function sendReplyKeyboard(env, chatId, replyToMessageId) {
   await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       chat_id: chatId,
       text: "เลือกคำสั่งได้เลยค่ะนาย:",
+      reply_to_message_id: replyToMessageId || undefined,
       reply_markup: getReplyKeyboardMarkup(env),
     }),
   });
 }
 
-export async function sendMemberReplyKeyboard(env, chatId, firstName) {
+export async function sendMemberReplyKeyboard(env, chatId, firstName, replyToMessageId) {
   await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       chat_id: chatId,
       text: `สวัสดีค่ะ ${firstName || ""} 👋\n${env.BOT_NAME || "Friday"} พร้อมช่วยเหลือค่ะ`,
+      reply_to_message_id: replyToMessageId || undefined,
       reply_markup: {
         keyboard: [
           [{ text: "Tasks" }, { text: "Read Link" }],
@@ -209,6 +212,7 @@ export async function sendMemberReplyKeyboard(env, chatId, firstName) {
         ],
         resize_keyboard: true,
         is_persistent: true,
+        selective: true,
       },
     }),
   });

@@ -17,7 +17,9 @@ export const MEMBER_COMMANDS = new Set([
   "/cal",
 ]);
 
-export const MEMBER_CALLBACKS = new Set(["tk:", "rl:", "fc:", "recap:", "del:", "sm:", "cl:"]);
+export const MEMBER_CALLBACKS = new Set(["tk:", "rl:", "fc:", "recap:", "del:", "sm:", "cl:", "sec:"]);
+
+export const SECRETARY_CALLBACKS = new Set(["sec:"]);
 
 // Telegram-supported HTML tags
 export const ALLOWED_TAGS = new Set(["b", "i", "u", "s", "code", "pre", "blockquote", "a", "tg-spoiler", "tg-emoji"]);
