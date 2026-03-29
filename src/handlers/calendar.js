@@ -270,6 +270,7 @@ function formatEventList(events, label) {
         text += `  📎 <a href="${escapeHtml(att.url)}">${escapeHtml(att.title)}</a>\n`;
       }
     }
+    text += "\n";
   }
 
   return text;
