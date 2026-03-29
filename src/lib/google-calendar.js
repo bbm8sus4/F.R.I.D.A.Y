@@ -112,7 +112,7 @@ export async function getEvent(env, eventId) {
  * @param {Object} opts - { title, date (YYYY-MM-DD), time (HH:MM), duration (minutes), description }
  * Returns the created event formatted.
  */
-export async function createEvent(env, { title, date, time, duration = 60, description = "" }) {
+export async function createEvent(env, { title, date, time, duration = 60, description = "", location = "" }) {
   const token = await getAccessToken(env);
   const calId = encodeURIComponent(env.GOOGLE_CALENDAR_ID || "primary");
 
@@ -126,6 +126,7 @@ export async function createEvent(env, { title, date, time, duration = 60, descr
     end: { dateTime: `${endDt}+07:00`, timeZone: "Asia/Bangkok" },
   };
   if (description) body.description = description;
+  if (location) body.location = location;
 
   const res = await fetch(`${CALENDAR_API}/calendars/${calId}/events`, {
     method: "POST",
@@ -156,7 +157,8 @@ export async function updateEvent(env, eventId, updates) {
 
   const body = {};
   if (updates.title) body.summary = updates.title;
-  if (updates.description) body.description = updates.description;
+  if (updates.description !== undefined) body.description = updates.description;
+  if (updates.location !== undefined) body.location = updates.location;
   if (updates.date && updates.time) {
     const duration = updates.duration || 60;
     const startDt = `${updates.date}T${updates.time}:00`;

@@ -57,7 +57,15 @@ export function buildSecretaryPrompt(env, context) {
   ตัวอย่าง:
     "ลงนัดโปรแกรม PICO พรุ่งนี้ 17:00" → create_calendar_event(title="โปรแกรม PICO", date=พรุ่งนี้, time="17:00")
     "ลงนัดประชุมวันศุกร์ บ่ายโมง" → create_calendar_event(title="ประชุม", date=วันศุกร์ถัดไป, time="13:00")
+    "ลงนัดกินข้าวพรุ่งนี้ 19:00 ที่ร้านญี่ปุ่น" → create_calendar_event(title="กินข้าว", date=พรุ่งนี้, time="19:00", location="ร้านญี่ปุ่น")
 - เมื่อ${bossTitle}ถามนัดหมาย/ดูปฏิทิน: ใช้ list_calendar_events
+- เมื่อ${bossTitle}บอกแก้นัด/เลื่อนนัด/เปลี่ยนเวลานัด: ใช้ update_calendar_event (ดู event_id จาก context [id:xxx])
+  ตัวอย่าง:
+    "เลื่อนนัด PICO ไป 18:00" → update_calendar_event(event_id="xxx", time="18:00")
+    "เปลี่ยนนัดประชุมเป็นวันศุกร์" → update_calendar_event(event_id="xxx", date=วันศุกร์ถัดไป)
+- เมื่อ${bossTitle}บอกลบนัด/ยกเลิกนัด/เอาออก: ใช้ delete_calendar_event (ต้องยืนยันก่อนลบ)
+  ตัวอย่าง:
+    "ลบนัดกินข้าวญี่ปุ่น" → delete_calendar_event(event_id="xxx")
 - เมื่อไม่แน่ใจว่าหมายถึง task ไหน: ใช้ resolve_task_reference หรือ ask_clarification
 - เมื่อไม่แน่ใจว่าหมายถึงใคร: ใช้ resolve_user_by_name หรือ ask_clarification
 

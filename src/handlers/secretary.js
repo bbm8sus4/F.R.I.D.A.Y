@@ -393,6 +393,9 @@ function formatConfirmationMessage(confirmationData) {
   if (toolName === 'update_task' && args.assignee_name) {
     return `📝 จะมอบหมาย Task #${args.task_id} ให้ <b>${escapeHtml(args.assignee_name)}</b>`;
   }
+  if (toolName === 'delete_calendar_event') {
+    return `🗑 จะลบนัดหมายนี้ออกจากปฏิทิน (event: <code>${escapeHtml(args.event_id || '')}</code>)`;
+  }
   return `⚡ ยืนยันการดำเนินการ: ${toolName}`;
 }
 
@@ -409,6 +412,21 @@ function formatToolResult(toolName, result) {
   }
   if (toolName === 'send_message') {
     return `📨 ส่งข้อความเรียบร้อยแล้วค่ะ`;
+  }
+  if (toolName === 'create_calendar_event') {
+    let text = `📅 สร้างนัด "<b>${escapeHtml(result.title || '')}</b>"`;
+    text += `\n📆 ${result.date} เวลา ${result.time}-${result.endTime}`;
+    if (result.location) text += `\n📍 ${escapeHtml(result.location)}`;
+    return text;
+  }
+  if (toolName === 'update_calendar_event') {
+    let text = `📅 แก้ไขนัด "<b>${escapeHtml(result.title || '')}</b>"`;
+    text += `\n📆 ${result.date} เวลา ${result.time}-${result.endTime}`;
+    if (result.location) text += `\n📍 ${escapeHtml(result.location)}`;
+    return text;
+  }
+  if (toolName === 'delete_calendar_event') {
+    return `🗑 ลบนัดหมายแล้ว — "<b>${escapeHtml(result.title || '')}</b>"`;
   }
   return JSON.stringify(result).substring(0, 300);
 }

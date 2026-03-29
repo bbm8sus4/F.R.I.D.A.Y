@@ -186,6 +186,7 @@ export async function buildSecretaryContext(env, chatId, isDM, userQuery) {
             if (address) line += ` 📍${address}`;
             if (urlMatch) line += ` 🗺️${urlMatch[1]}`;
           }
+          line += ` [id:${e.id}]`;
           context += line + '\n';
         }
         context += '\n';

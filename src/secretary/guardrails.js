@@ -3,6 +3,7 @@
 // Tools that require explicit user confirmation before execution
 const CONFIRMATION_REQUIRED = new Set([
   'send_message',
+  'delete_calendar_event',
 ]);
 
 // Tools that require confirmation in specific conditions
@@ -19,6 +20,8 @@ const BOSS_ONLY_TOOLS = new Set([
   'send_message',
   'add_member',
   'schedule_reminder',
+  'update_calendar_event',
+  'delete_calendar_event',
 ]);
 
 // Member permission: can only modify own tasks

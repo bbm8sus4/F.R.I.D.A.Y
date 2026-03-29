@@ -1,11 +1,11 @@
-// Calendar tools — create and list Google Calendar events via secretary
+// Calendar tools — create, list, update, delete Google Calendar events via secretary
 
-import { createEvent, listEvents, isCalendarConfigured } from '../../lib/google-calendar.js';
+import { createEvent, listEvents, getEvent, updateEvent, deleteEvent, isCalendarConfigured } from '../../lib/google-calendar.js';
 
 export const definitions = [
   {
     name: 'create_calendar_event',
-    description: 'สร้างนัดหมายใน Google Calendar — ระบุชื่อ วันที่ เวลา ระยะเวลา',
+    description: 'สร้างนัดหมายใน Google Calendar — ระบุชื่อ วันที่ เวลา ระยะเวลา สถานที่',
     parameters: {
       type: 'OBJECT',
       properties: {
@@ -14,6 +14,7 @@ export const definitions = [
         time: { type: 'STRING', description: 'เวลา HH:MM เช่น 09:00, 17:30 (จำเป็น)' },
         duration: { type: 'INTEGER', description: 'ระยะเวลาเป็นนาที (default 60)' },
         description: { type: 'STRING', description: 'รายละเอียดเพิ่มเติม' },
+        location: { type: 'STRING', description: 'สถานที่ เช่น "ออฟฟิศ", "ร้านอาหารญี่ปุ่น"' },
       },
       required: ['title', 'date', 'time'],
     },
@@ -30,6 +31,34 @@ export const definitions = [
       required: ['start_date'],
     },
   },
+  {
+    name: 'update_calendar_event',
+    description: 'แก้ไขนัดหมายที่มีอยู่ — เปลี่ยนชื่อ วันที่ เวลา ระยะเวลา สถานที่ ได้ (ดู event_id จาก context)',
+    parameters: {
+      type: 'OBJECT',
+      properties: {
+        event_id: { type: 'STRING', description: 'ID ของนัดหมาย (ดูจาก context [id:xxx])' },
+        title: { type: 'STRING', description: 'ชื่อนัดหมายใหม่' },
+        date: { type: 'STRING', description: 'วันที่ใหม่ YYYY-MM-DD' },
+        time: { type: 'STRING', description: 'เวลาใหม่ HH:MM' },
+        duration: { type: 'INTEGER', description: 'ระยะเวลาใหม่เป็นนาที' },
+        description: { type: 'STRING', description: 'รายละเอียดใหม่' },
+        location: { type: 'STRING', description: 'สถานที่ใหม่' },
+      },
+      required: ['event_id'],
+    },
+  },
+  {
+    name: 'delete_calendar_event',
+    description: 'ลบนัดหมายออกจาก Google Calendar (ต้องยืนยันก่อนลบ) — ดู event_id จาก context',
+    parameters: {
+      type: 'OBJECT',
+      properties: {
+        event_id: { type: 'STRING', description: 'ID ของนัดหมายที่จะลบ (ดูจาก context [id:xxx])' },
+      },
+      required: ['event_id'],
+    },
+  },
 ];
 
 export const executors = {
@@ -37,13 +66,14 @@ export const executors = {
     if (!isCalendarConfigured(env)) {
       return { error: 'Google Calendar ยังไม่ได้ตั้งค่าค่ะ' };
     }
-    const { title, date, time, duration, description } = args;
+    const { title, date, time, duration, description, location } = args;
     const event = await createEvent(env, {
       title,
       date,
       time,
       duration: duration || 60,
       description: description || '',
+      location: location || '',
     });
     return {
       success: true,
@@ -52,6 +82,7 @@ export const executors = {
       date: event.date,
       time: event.time,
       endTime: event.endTime,
+      location: event.location || null,
     };
   },
 
@@ -84,6 +115,77 @@ export const executors = {
         description: e.description ? e.description.slice(0, 100) : null,
       })),
       count: events.length,
+    };
+  },
+
+  async update_calendar_event(env, args) {
+    if (!isCalendarConfigured(env)) {
+      return { error: 'Google Calendar ยังไม่ได้ตั้งค่าค่ะ' };
+    }
+    const { event_id, title, date, time, duration, description, location } = args;
+
+    // Smart merge: if time is given but date is not, fetch existing event to get its date
+    const updates = {};
+    if (title) updates.title = title;
+    if (description !== undefined) updates.description = description;
+    if (location !== undefined) updates.location = location;
+
+    if (time || date || duration) {
+      let resolvedDate = date;
+      let resolvedTime = time;
+      let resolvedDuration = duration;
+
+      // Need both date+time for datetime update — fetch existing if missing
+      if ((time && !date) || (date && !time) || (duration && !time)) {
+        const existing = await getEvent(env, event_id);
+        if (!resolvedDate) resolvedDate = existing.date;
+        if (!resolvedTime) resolvedTime = existing.time;
+        if (!resolvedDuration && existing.endTime && existing.time) {
+          // Calculate existing duration from time strings
+          const [sh, sm] = existing.time.split(':').map(Number);
+          const [eh, em] = existing.endTime.split(':').map(Number);
+          resolvedDuration = (eh * 60 + em) - (sh * 60 + sm);
+          if (resolvedDuration <= 0) resolvedDuration = 60;
+        }
+      }
+
+      if (resolvedDate && resolvedTime) {
+        updates.date = resolvedDate;
+        updates.time = resolvedTime;
+        if (resolvedDuration) updates.duration = resolvedDuration;
+      }
+    }
+
+    const event = await updateEvent(env, event_id, updates);
+    return {
+      success: true,
+      event_id: event.id,
+      title: event.title,
+      date: event.date,
+      time: event.time,
+      endTime: event.endTime,
+      location: event.location || null,
+    };
+  },
+
+  async delete_calendar_event(env, args) {
+    if (!isCalendarConfigured(env)) {
+      return { error: 'Google Calendar ยังไม่ได้ตั้งค่าค่ะ' };
+    }
+    const { event_id } = args;
+
+    // Fetch event info before deleting (for confirmation message)
+    let eventTitle = '';
+    try {
+      const event = await getEvent(env, event_id);
+      eventTitle = event.title;
+    } catch { /* proceed with delete even if fetch fails */ }
+
+    await deleteEvent(env, event_id);
+    return {
+      success: true,
+      event_id,
+      title: eventTitle,
     };
   },
 };
