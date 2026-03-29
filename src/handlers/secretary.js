@@ -167,6 +167,8 @@ export async function handleSecretary(env, message, botUsername, text, hasMedia,
     // Normal text response
     if (result.text) {
       await sendTelegram(env, message.chat.id, result.text, message.message_id, true);
+    } else {
+      await sendTelegram(env, message.chat.id, 'ไม่เข้าใจค่ะนาย ลองพิมพ์ใหม่อีกครั้งนะคะ', message.message_id);
     }
   } catch (err) {
     console.error('handleSecretary error:', err.message, err.stack);
@@ -234,6 +236,8 @@ export async function handleSecretaryContinue(env, message, activeConvo, text, i
 
     if (result.text) {
       await sendTelegram(env, message.chat.id, result.text, message.message_id, true);
+    } else {
+      await sendTelegram(env, message.chat.id, 'ไม่เข้าใจค่ะนาย ลองพิมพ์ใหม่อีกครั้งนะคะ', message.message_id);
     }
   } catch (err) {
     console.error('handleSecretaryContinue error:', err.message, err.stack);
@@ -344,6 +348,8 @@ export async function handleSecretaryCallback(env, callbackQuery) {
 
       if (result.text) {
         await sendTelegram(env, chatId, result.text, null, true);
+      } else {
+        await sendTelegram(env, chatId, 'ไม่เข้าใจค่ะ ลองพิมพ์ใหม่อีกครั้งนะคะ', null);
       }
     }
   } catch (err) {
