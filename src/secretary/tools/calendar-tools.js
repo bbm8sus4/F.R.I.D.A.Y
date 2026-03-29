@@ -156,16 +156,20 @@ export const executors = {
       }
     }
 
-    const event = await updateEvent(env, event_id, updates);
-    return {
-      success: true,
-      event_id: event.id,
-      title: event.title,
-      date: event.date,
-      time: event.time,
-      endTime: event.endTime,
-      location: event.location || null,
-    };
+    try {
+      const event = await updateEvent(env, event_id, updates);
+      return {
+        success: true,
+        event_id: event.id,
+        title: event.title,
+        date: event.date,
+        time: event.time,
+        endTime: event.endTime,
+        location: event.location || null,
+      };
+    } catch (e) {
+      return { error: `แก้ไขนัดหมายไม่สำเร็จ: ${e.message}` };
+    }
   },
 
   async delete_calendar_event(env, args) {
@@ -174,14 +178,20 @@ export const executors = {
     }
     const { event_id } = args;
 
-    // Fetch event info before deleting (for confirmation message)
+    // Fetch event info before deleting (for result message)
     let eventTitle = '';
     try {
       const event = await getEvent(env, event_id);
       eventTitle = event.title;
-    } catch { /* proceed with delete even if fetch fails */ }
+    } catch {
+      return { error: `ไม่พบนัดหมาย event_id="${event_id}" — อาจถูกลบไปแล้วหรือ ID ไม่ถูกต้องค่ะ` };
+    }
 
-    await deleteEvent(env, event_id);
+    try {
+      await deleteEvent(env, event_id);
+    } catch (e) {
+      return { error: `ลบนัดหมายไม่สำเร็จ: ${e.message}` };
+    }
     return {
       success: true,
       event_id,

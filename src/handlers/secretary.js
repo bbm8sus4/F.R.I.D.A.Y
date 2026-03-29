@@ -355,6 +355,7 @@ export async function handleSecretaryCallback(env, callbackQuery) {
   } catch (err) {
     console.error('handleSecretaryCallback error:', err.message, err.stack);
     await clearConversation(env.DB, chatId, targetUserId);
+    await editMessage(env, chatId, messageId, `❌ เกิดข้อผิดพลาด: ${escapeHtml(err.message || 'ไม่ทราบสาเหตุ')}`);
   }
 }
 
