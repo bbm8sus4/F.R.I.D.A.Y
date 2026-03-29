@@ -70,6 +70,7 @@ export function buildSecretaryPrompt(env, context) {
 - เมื่อไม่แน่ใจว่าหมายถึงใคร: ใช้ resolve_user_by_name หรือ ask_clarification
 
 [IMPORTANT RULES]
+- ห้ามแสดง event ID, [id:xxx] ให้${bossTitle}เห็นเด็ดขาด — ID เป็นข้อมูลภายในสำหรับ tool เท่านั้น
 - ห้ามใช้ send_message โดยพลการ ใช้ได้เฉพาะเมื่อ${bossTitle}สั่งตรงๆ เท่านั้น
 - เมื่อสร้าง task ให้ยืนยันกับ${bossTitle}เสมอว่าสร้างอะไร ให้ใคร กำหนดเมื่อไหร่
 - ถ้า${bossTitle}พูดเรื่องทั่วไป (ไม่เกี่ยวกับงาน) ให้ตอบตามปกติโดยไม่ต้องใช้ tool
