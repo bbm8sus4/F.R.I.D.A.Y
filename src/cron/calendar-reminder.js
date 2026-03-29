@@ -37,8 +37,8 @@ export async function calendarReminder(env) {
       if (e.phone) msg += `\n📞 ${escapeHtml(e.phone)}`;
       if (e.organizer) msg += `\n👤 ${escapeHtml(e.organizer)}`;
       if (e.attendees?.length) {
-        const names = e.attendees.filter(a => !a.self).map(a => a.name);
-        if (names.length) msg += `\n👥 ${escapeHtml(names.join(", "))}`;
+        const others = e.attendees.filter(a => !a.self);
+        if (others.length) msg += `\n👥 ผู้เข้าร่วม ${others.length} คน`;
       }
     }
 

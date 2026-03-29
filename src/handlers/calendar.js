@@ -262,13 +262,8 @@ function formatEventList(events, label) {
     if (e.phone) text += `  📞 ${escapeHtml(e.phone)}\n`;
     if (e.organizer) text += `  👤 จัดโดย: ${escapeHtml(e.organizer)}\n`;
     if (e.attendees?.length) {
-      const attendeeList = e.attendees
-        .filter(a => !a.self)
-        .map(a => {
-          const icon = a.status === "accepted" ? "✅" : a.status === "declined" ? "❌" : a.status === "tentative" ? "❓" : "⏳";
-          return `${icon}${escapeHtml(a.name)}`;
-        });
-      if (attendeeList.length) text += `  👥 ${attendeeList.join(", ")}\n`;
+      const others = e.attendees.filter(a => !a.self);
+      if (others.length) text += `  👥 ผู้เข้าร่วม ${others.length} คน\n`;
     }
     if (e.attachments?.length) {
       for (const att of e.attachments) {
