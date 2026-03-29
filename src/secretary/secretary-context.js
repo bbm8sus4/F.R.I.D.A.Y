@@ -180,7 +180,12 @@ export async function buildSecretaryContext(env, chatId, isDM, userQuery) {
         for (const e of events) {
           const timeStr = e.time === 'ทั้งวัน' ? 'ทั้งวัน' : `${e.time}-${e.endTime}`;
           let line = `📅 ${e.date} ${timeStr} — ${e.title}`;
-          if (e.location) line += ` 📍${e.location}`;
+          if (e.location) {
+            const urlMatch = e.location.match(/(https?:\/\/[^\s,]+)/);
+            const address = e.location.replace(/(https?:\/\/[^\s,]+)[,\s]*/g, '').trim();
+            if (address) line += ` 📍${address}`;
+            if (urlMatch) line += ` 🗺️${urlMatch[1]}`;
+          }
           context += line + '\n';
         }
         context += '\n';

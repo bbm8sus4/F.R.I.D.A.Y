@@ -243,7 +243,12 @@ export async function getSmartContext(db, chatId, isDM, userQuery, env) {
         for (const e of events) {
           const timeStr = e.time === "ทั้งวัน" ? "ทั้งวัน" : `${e.time}-${e.endTime}`;
           let line = `📅 ${e.date} ${timeStr} — ${e.title} [eventId:${e.id}]`;
-          if (e.location) line += ` 📍${e.location}`;
+          if (e.location) {
+            const urlMatch = e.location.match(/(https?:\/\/[^\s,]+)/);
+            const address = e.location.replace(/(https?:\/\/[^\s,]+)[,\s]*/g, '').trim();
+            if (address) line += ` 📍${address}`;
+            if (urlMatch) line += ` 🗺️${urlMatch[1]}`;
+          }
           if (e.meetLink) line += ` 🔗${e.meetLink}`;
           if (e.organizer) line += ` 👤${e.organizer}`;
           if (e.attendees?.length) {

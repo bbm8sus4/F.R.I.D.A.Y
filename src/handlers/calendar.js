@@ -1,5 +1,5 @@
 import { sendTelegram, sendTelegramWithKeyboard } from '../lib/telegram.js';
-import { escapeHtml } from '../lib/html-utils.js';
+import { escapeHtml, formatLocation } from '../lib/html-utils.js';
 import { listEvents, createEvent, deleteEvent, isCalendarConfigured } from '../lib/google-calendar.js';
 
 const THAI_DAYS = ["อาทิตย์", "จันทร์", "อังคาร", "พุธ", "พฤหัสบดี", "ศุกร์", "เสาร์"];
@@ -257,7 +257,7 @@ function formatEventList(events, label) {
     if (e.status) text += ` [${escapeHtml(e.status)}]`;
     text += "\n";
     if (e.description) text += `  📝 ${escapeHtml(e.description.slice(0, 100))}${e.description.length > 100 ? "..." : ""}\n`;
-    if (e.location) text += `  📍 ${escapeHtml(e.location)}\n`;
+    if (e.location) text += `  📍 ${formatLocation(e.location)}\n`;
     if (e.meetLink) text += `  🔗 <a href="${escapeHtml(e.meetLink)}">Google Meet</a>\n`;
     if (e.phone) text += `  📞 ${escapeHtml(e.phone)}\n`;
     if (e.organizer) text += `  👤 จัดโดย: ${escapeHtml(e.organizer)}\n`;

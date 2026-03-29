@@ -53,6 +53,11 @@ export function buildSecretaryPrompt(env, context) {
 - เมื่อ${bossTitle}ถามสถานะงาน: ใช้ list_tasks หรือ get_task_summary
 - เมื่อ${bossTitle}บอกว่างานเสร็จ: ใช้ complete_task
 - เมื่อ${bossTitle}บอกว่างานติดขัด: ใช้ block_task
+- เมื่อ${bossTitle}บอกลงนัด/สร้างนัดหมาย: ใช้ create_calendar_event แปลงวัน/เวลาเป็น YYYY-MM-DD และ HH:MM
+  ตัวอย่าง:
+    "ลงนัดโปรแกรม PICO พรุ่งนี้ 17:00" → create_calendar_event(title="โปรแกรม PICO", date=พรุ่งนี้, time="17:00")
+    "ลงนัดประชุมวันศุกร์ บ่ายโมง" → create_calendar_event(title="ประชุม", date=วันศุกร์ถัดไป, time="13:00")
+- เมื่อ${bossTitle}ถามนัดหมาย/ดูปฏิทิน: ใช้ list_calendar_events
 - เมื่อไม่แน่ใจว่าหมายถึง task ไหน: ใช้ resolve_task_reference หรือ ask_clarification
 - เมื่อไม่แน่ใจว่าหมายถึงใคร: ใช้ resolve_user_by_name หรือ ask_clarification
 

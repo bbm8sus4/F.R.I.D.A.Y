@@ -1,5 +1,6 @@
 import { sendTelegram } from '../lib/telegram.js';
 import { isCalendarConfigured, listEvents } from '../lib/google-calendar.js';
+import { escapeHtml, formatLocation } from '../lib/html-utils.js';
 
 export async function calendarReminder(env) {
   try {
@@ -31,7 +32,7 @@ export async function calendarReminder(env) {
     for (const e of newEvents) {
       const timeRange = e.endTime ? `${e.time}-${e.endTime}` : e.time;
       msg += `\n📅 ${timeRange} ${escapeHtml(e.title)}`;
-      if (e.location) msg += `\n📍 ${escapeHtml(e.location)}`;
+      if (e.location) msg += `\n📍 ${formatLocation(e.location)}`;
       if (e.meetLink) msg += `\n🔗 <a href="${escapeHtml(e.meetLink)}">Google Meet</a>`;
       if (e.phone) msg += `\n📞 ${escapeHtml(e.phone)}`;
       if (e.organizer) msg += `\n👤 ${escapeHtml(e.organizer)}`;
@@ -60,6 +61,3 @@ export async function calendarReminder(env) {
   }
 }
 
-function escapeHtml(text) {
-  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-}

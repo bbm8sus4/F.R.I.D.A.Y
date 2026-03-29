@@ -132,6 +132,17 @@ export function splitMessage(text, maxLength = 4096, isHtml = false) {
   return chunks;
 }
 
+export function formatLocation(location) {
+  const urlMatch = location.match(/(https?:\/\/[^\s,]+)/);
+  if (!urlMatch) return escapeHtml(location);
+
+  const url = urlMatch[1];
+  const rest = location.replace(url, '').replace(/^[,\s]+|[,\s]+$/g, '').trim();
+
+  const link = `<a href="${escapeHtml(url)}">แผนที่</a>`;
+  return rest ? `${link} ${escapeHtml(rest)}` : link;
+}
+
 export function truncateDesc(desc, maxLen = 60) {
   if (!desc) return "";
   const firstLine = desc.split('\n')[0];
