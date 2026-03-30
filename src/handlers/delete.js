@@ -1,5 +1,4 @@
 import { sendTelegram, sendTelegramWithKeyboard } from "../lib/telegram.js";
-import { escapeHtml } from "../lib/html-utils.js";
 
 export async function handleDeleteCommand(env, message) {
   try {

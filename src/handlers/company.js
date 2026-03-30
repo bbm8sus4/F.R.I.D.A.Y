@@ -1,6 +1,5 @@
 import { sendTelegram, sendTelegramWithKeyboard, sendTyping } from "../lib/telegram.js";
 import { escapeHtml, sanitizeHtml } from "../lib/html-utils.js";
-import { formatMessages } from "../lib/context.js";
 
 export async function handleCompanyCommand(env, message) {
   try {

@@ -1,5 +1,5 @@
 import { sendTelegram, sendTelegramWithKeyboard } from '../lib/telegram.js';
-import { URGENT_PATTERNS } from '../lib/constants.js';
+import { escapeHtml, truncateDesc } from '../lib/html-utils.js';
 
 export async function proactiveAlert(env) {
   try {

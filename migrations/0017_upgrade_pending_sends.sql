@@ -1,6 +1,4 @@
--- Upgrade pending_sends for AI compose + edit loop
-DROP TABLE IF EXISTS pending_sends;
-CREATE TABLE pending_sends (
+CREATE TABLE IF NOT EXISTS pending_sends (
   user_id INTEGER PRIMARY KEY,
   target_chat_id TEXT NOT NULL,
   instruction TEXT,

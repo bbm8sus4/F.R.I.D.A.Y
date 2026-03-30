@@ -1,4 +1,3 @@
--- Workspace members for secretary layer
 CREATE TABLE IF NOT EXISTS workspace_members (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   telegram_user_id INTEGER,
@@ -11,5 +10,3 @@ CREATE TABLE IF NOT EXISTS workspace_members (
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
-CREATE UNIQUE INDEX IF NOT EXISTS idx_wm_telegram ON workspace_members(telegram_user_id) WHERE telegram_user_id IS NOT NULL;
-CREATE INDEX IF NOT EXISTS idx_wm_name ON workspace_members(display_name);

@@ -1,4 +1,3 @@
--- Conversation state for multi-turn secretary interactions
 CREATE TABLE IF NOT EXISTS conversation_state (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   chat_id INTEGER NOT NULL,
@@ -9,5 +8,3 @@ CREATE TABLE IF NOT EXISTS conversation_state (
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
-CREATE INDEX IF NOT EXISTS idx_conv_lookup ON conversation_state(chat_id, user_id);
-CREATE INDEX IF NOT EXISTS idx_conv_expires ON conversation_state(expires_at);

@@ -270,7 +270,7 @@ export async function proactiveInsightAlert(env) {
 
     const urgencyEmoji = { critical: "🔴", high: "🟠", medium: "🟡", low: "🟢" };
     const categoryEmoji = { money: "💰", problem: "⚠️", decision: "📋", info: "💡", mention: "👥" };
-    const esc = s => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    const esc = escapeHtml;
 
     for (const alert of parsed.alerts) {
       // Resolve chat_id: use AI-provided or try to match group_title

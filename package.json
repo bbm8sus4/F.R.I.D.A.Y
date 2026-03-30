@@ -5,10 +5,11 @@
   "scripts": {
     "dev": "wrangler dev",
     "dev:daisy": "wrangler dev --env daisy",
+    "dev:sigma": "wrangler dev --env sigma",
     "deploy": "wrangler deploy",
     "deploy:daisy": "wrangler deploy --env daisy",
-    "deploy:all": "wrangler deploy && wrangler deploy --env daisy && wrangler deploy --env sigma",
     "deploy:sigma": "wrangler deploy --env sigma",
+    "deploy:all": "wrangler deploy && wrangler deploy --env daisy && wrangler deploy --env sigma",
     "db:migrate": "wrangler d1 migrations apply my-ai-bot-db",
     "db:migrate:daisy": "wrangler d1 migrations apply daisy-ai-bot-db --env daisy",
     "db:migrate:sigma": "wrangler d1 migrations apply sigma-ai-bot-db --env sigma",
@@ -16,7 +17,6 @@
     "db:migrate:local": "wrangler d1 migrations apply my-ai-bot-db --local",
     "tail": "wrangler tail",
     "tail:daisy": "wrangler tail --env daisy",
-    "dev:sigma": "wrangler dev --env sigma",
     "tail:sigma": "wrangler tail --env sigma"
   }
 }
