@@ -397,6 +397,9 @@ function formatConfirmationMessage(confirmationData) {
   if (toolName === 'delete_calendar_event') {
     return `🗑 จะลบนัดหมายนี้ออกจากปฏิทิน (event: <code>${escapeHtml(args.event_id || '')}</code>)`;
   }
+  if (toolName === 'delete_memory') {
+    return `🗑 จะลบความจำ #${args.memory_id}`;
+  }
   return `⚡ ยืนยันการดำเนินการ: ${toolName}`;
 }
 
@@ -428,6 +431,12 @@ function formatToolResult(toolName, result) {
   }
   if (toolName === 'delete_calendar_event') {
     return `🗑 ลบนัดหมายแล้ว — "<b>${escapeHtml(result.title || '')}</b>"`;
+  }
+  if (toolName === 'save_memory') {
+    return `🧠 จำแล้วค่ะ #${result.memory_id} — "${escapeHtml(result.content || '')}" (หมวด: ${result.category})`;
+  }
+  if (toolName === 'delete_memory') {
+    return `🗑 ลบความจำ #${result.memory_id} แล้วค่ะ`;
   }
   return JSON.stringify(result).substring(0, 300);
 }

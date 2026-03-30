@@ -25,6 +25,12 @@ const FALLBACK_PATTERNS = [
     tool: 'cancel_task',
     extract: (m) => ({ task_id: Number(m[1]) }),
   },
+  {
+    // จำไว้ว่า.../จดจำ.../remember ...
+    pattern: /(?:จำไว้|จดจำ|remember)\s+(?:ว่า\s*)?(.+)/i,
+    tool: 'save_memory',
+    extract: (m) => ({ content: m[1].trim() }),
+  },
 ];
 
 export function fallbackIntentExtraction(text) {

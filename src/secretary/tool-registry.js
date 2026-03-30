@@ -6,6 +6,7 @@ import { definitions as summaryDefs, executors as summaryExecs } from './tools/s
 import { definitions as sendDefs, executors as sendExecs } from './tools/send-tools.js';
 import { definitions as employeeDefs, executors as employeeExecs } from './tools/employee-tools.js';
 import { definitions as calendarDefs, executors as calendarExecs } from './tools/calendar-tools.js';
+import { definitions as memoryDefs, executors as memoryExecs } from './tools/memory-tools.js';
 
 // All tool definitions (for Gemini function_declarations)
 export function getAllToolDefinitions(role) {
@@ -20,6 +21,7 @@ export function getAllToolDefinitions(role) {
   if (role === 'boss') {
     tools.push(...sendDefs);
     tools.push(...calendarDefs);
+    tools.push(...memoryDefs);
   }
 
   return tools;
@@ -33,6 +35,7 @@ const allExecutors = {
   ...sendExecs,
   ...employeeExecs,
   ...calendarExecs,
+  ...memoryExecs,
 };
 
 export function getExecutor(toolName) {
