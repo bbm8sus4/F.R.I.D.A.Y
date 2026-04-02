@@ -55,7 +55,7 @@ export async function executeSecretaryTurn(env, { systemPrompt, messages, role, 
         toolCallsCount: totalToolCalls, toolNames: toolNamesUsed,
         durationMs: Date.now() - startTime, success: true,
       });
-      return { text: response.text || '' };
+      return { text: response.text || '', noToolsUsed: totalToolCalls === 0 };
     }
 
     // Process tool calls

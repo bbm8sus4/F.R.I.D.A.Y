@@ -175,6 +175,20 @@ export async function handleSecretary(env, message, botUsername, text, hasMedia,
       return;
     }
 
+    // No tools used = general question → re-route to askGemini (has Google Search + sources)
+    if (result.noToolsUsed) {
+      try {
+        const reply = await askGemini(env, userMessage, context, imageData);
+        if (reply) {
+          await sendTelegram(env, message.chat.id, reply, message.message_id, true);
+          return;
+        }
+      } catch (e) {
+        console.error('askGemini re-route error:', e.message);
+        // Fall through to secretary's own response
+      }
+    }
+
     // Normal text response
     if (result.text) {
       await sendTelegram(env, message.chat.id, result.text, message.message_id, true);
