@@ -9,6 +9,7 @@ import { saveConversation, clearConversation } from '../secretary/conversation.j
 import { fallbackIntentExtraction, buildFallbackResponse } from '../secretary/fallback.js';
 import { getExecutor } from '../secretary/tool-registry.js';
 import { escapeHtml } from '../lib/html-utils.js';
+import { askGemini } from '../lib/gemini.js';
 
 export async function handleSecretary(env, message, botUsername, text, hasMedia, isDM) {
   try {
@@ -100,7 +101,7 @@ export async function handleSecretary(env, message, botUsername, text, hasMedia,
 
     // Handle result
     if (result.error) {
-      // Try fallback
+      // Try fallback regex for task-like commands
       const fallbackResult = fallbackIntentExtraction(cleanText);
       if (fallbackResult) {
         const executor = getExecutor(fallbackResult.tool);
@@ -119,6 +120,16 @@ export async function handleSecretary(env, message, botUsername, text, hasMedia,
             }
           } catch { /* fallback also failed */ }
         }
+      }
+      // Fall through to askGemini (has Google Search) for general questions
+      try {
+        const reply = await askGemini(env, userMessage, context, imageData);
+        if (reply) {
+          await sendTelegram(env, message.chat.id, reply, message.message_id, true);
+          return;
+        }
+      } catch (e) {
+        console.error('askGemini fallback error:', e.message);
       }
       await sendTelegram(env, message.chat.id,
         buildFallbackResponse(env.BOT_NAME || 'Friday'),
