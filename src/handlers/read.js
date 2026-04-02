@@ -422,14 +422,22 @@ function isPrivateUrl(urlStr) {
   try {
     const parsed = new URL(urlStr);
     const hostname = parsed.hostname.toLowerCase();
+    // Only allow http/https schemes
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return true;
     // Block private/internal hostnames
-    if (hostname === "localhost" || hostname === "127.0.0.1" || hostname === "[::1]") return true;
+    if (hostname === "localhost" || hostname.endsWith(".localhost")) return true;
     if (hostname.endsWith(".local") || hostname.endsWith(".internal")) return true;
     // Block metadata endpoints
     if (hostname === "169.254.169.254" || hostname === "metadata.google.internal") return true;
-    // Block private IP ranges
+    // Block IPv6 private ranges
+    const bare = hostname.replace(/^\[|\]$/g, "");
+    if (bare === "::1" || bare === "::") return true;
+    if (bare.startsWith("fe80:") || bare.startsWith("fc") || bare.startsWith("fd")) return true;
+    if (bare.startsWith("::ffff:")) return true; // IPv4-mapped IPv6
+    // Block private IPv4 ranges
     const parts = hostname.split(".").map(Number);
     if (parts.length === 4 && parts.every(p => p >= 0 && p <= 255)) {
+      if (parts[0] === 127) return true; // 127.0.0.0/8
       if (parts[0] === 10) return true; // 10.0.0.0/8
       if (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) return true; // 172.16.0.0/12
       if (parts[0] === 192 && parts[1] === 168) return true; // 192.168.0.0/16
@@ -440,16 +448,26 @@ function isPrivateUrl(urlStr) {
   } catch { return true; }
 }
 
-export async function fetchUrlContent(url) {
+export async function fetchUrlContent(url, _redirectCount = 0) {
   if (isPrivateUrl(url)) return { error: "URL ที่ระบุไม่อนุญาตค่ะ" };
+  if (_redirectCount > 3) return { error: "Redirect มากเกินไปค่ะ" };
 
   const response = await fetch(url, {
     headers: {
       "User-Agent": "Mozilla/5.0 (compatible; AIBot/1.0)",
       "Accept": "text/html,application/xhtml+xml,*/*",
     },
-    redirect: "follow",
+    redirect: "manual",
   });
+
+  // Handle redirects — validate target before following
+  if (response.status >= 300 && response.status < 400) {
+    const location = response.headers.get("Location");
+    if (!location) return { error: "Redirect ไม่มีปลายทางค่ะ" };
+    const redirectUrl = new URL(location, url).href;
+    if (isPrivateUrl(redirectUrl)) return { error: "URL ที่ระบุไม่อนุญาตค่ะ" };
+    return fetchUrlContent(redirectUrl, _redirectCount + 1);
+  }
 
   if (!response.ok) return { error: `HTTP ${response.status}` };
 
