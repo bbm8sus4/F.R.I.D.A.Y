@@ -145,12 +145,12 @@ async function handleCalAdd(env, message, rawText) {
       duration: parsed.duration || 60,
     });
 
-    const d = new Date(event.date + "T00:00:00+07:00");
-    const dayThai = THAI_DAYS[d.getDay()];
-    const monthThai = THAI_MONTHS[d.getMonth()];
+    const d = new Date(event.date + "T12:00:00Z");
+    const dayThai = THAI_DAYS[d.getUTCDay()];
+    const monthThai = THAI_MONTHS[d.getUTCMonth()];
 
     await sendTelegram(env, chatId,
-      `✅ สร้างนัดหมายแล้วค่ะ\n\n📅 <b>${escapeHtml(event.title)}</b>\n📆 วัน${dayThai} ${d.getDate()} ${monthThai} ${d.getFullYear()}\n🕐 ${event.time}${event.endTime ? `-${event.endTime}` : ""}`,
+      `✅ สร้างนัดหมายแล้วค่ะ\n\n📅 <b>${escapeHtml(event.title)}</b>\n📆 วัน${dayThai} ${d.getUTCDate()} ${monthThai} ${d.getUTCFullYear()}\n🕐 ${event.time}${event.endTime ? `-${event.endTime}` : ""}`,
       msgId, true
     );
   } catch (err) {
@@ -247,10 +247,10 @@ function formatEventList(events, label) {
   for (const e of events) {
     if (e.date !== currentDate) {
       currentDate = e.date;
-      const d = new Date(e.date + "T00:00:00+07:00");
-      const dayThai = THAI_DAYS[d.getDay()];
-      const monthThai = THAI_MONTHS[d.getMonth()];
-      text += `\n<b>วัน${dayThai} ${d.getDate()} ${monthThai}</b>\n`;
+      const d = new Date(e.date + "T12:00:00Z");
+      const dayThai = THAI_DAYS[d.getUTCDay()];
+      const monthThai = THAI_MONTHS[d.getUTCMonth()];
+      text += `\n<b>วัน${dayThai} ${d.getUTCDate()} ${monthThai}</b>\n`;
     }
     const timeStr = e.time === "ทั้งวัน" ? "ทั้งวัน" : `${e.time}-${e.endTime}`;
     text += `• ${timeStr} ${escapeHtml(e.title)}`;

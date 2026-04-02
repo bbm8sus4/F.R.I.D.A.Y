@@ -140,10 +140,10 @@ export default {
         const oldId = message.chat.id;
         const newId = message.migrate_to_chat_id;
         ctx.waitUntil(Promise.all([
-          env.DB.prepare(`UPDATE messages SET chat_id = ? WHERE chat_id = ?`).bind(newId, oldId).run(),
-          env.DB.prepare(`UPDATE bot_messages SET chat_id = ? WHERE chat_id = ?`).bind(newId, oldId).run(),
-          env.DB.prepare(`UPDATE alerts SET chat_id = ? WHERE chat_id = ?`).bind(newId, oldId).run().catch(() => {}),
-          env.DB.prepare(`UPDATE group_registry SET chat_id = ? WHERE chat_id = ?`).bind(newId, oldId).run().catch(() => {}),
+          env.DB.prepare(`UPDATE messages SET chat_id = ? WHERE chat_id = ?`).bind(newId, oldId).run().catch(e => console.error("Migration messages:", e.message)),
+          env.DB.prepare(`UPDATE bot_messages SET chat_id = ? WHERE chat_id = ?`).bind(newId, oldId).run().catch(e => console.error("Migration bot_messages:", e.message)),
+          env.DB.prepare(`UPDATE alerts SET chat_id = ? WHERE chat_id = ?`).bind(newId, oldId).run().catch(e => console.error("Migration alerts:", e.message)),
+          env.DB.prepare(`UPDATE group_registry SET chat_id = ? WHERE chat_id = ?`).bind(newId, oldId).run().catch(e => console.error("Migration group_registry:", e.message)),
         ]));
         return new Response("OK", { status: 200 });
       }

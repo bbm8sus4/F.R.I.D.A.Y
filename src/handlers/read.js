@@ -418,7 +418,31 @@ export async function handleReadvoiceCommand(env, message, args) {
 
 // ===== /readlink — ดึงเนื้อหาจาก URL =====
 
+function isPrivateUrl(urlStr) {
+  try {
+    const parsed = new URL(urlStr);
+    const hostname = parsed.hostname.toLowerCase();
+    // Block private/internal hostnames
+    if (hostname === "localhost" || hostname === "127.0.0.1" || hostname === "[::1]") return true;
+    if (hostname.endsWith(".local") || hostname.endsWith(".internal")) return true;
+    // Block metadata endpoints
+    if (hostname === "169.254.169.254" || hostname === "metadata.google.internal") return true;
+    // Block private IP ranges
+    const parts = hostname.split(".").map(Number);
+    if (parts.length === 4 && parts.every(p => p >= 0 && p <= 255)) {
+      if (parts[0] === 10) return true; // 10.0.0.0/8
+      if (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) return true; // 172.16.0.0/12
+      if (parts[0] === 192 && parts[1] === 168) return true; // 192.168.0.0/16
+      if (parts[0] === 169 && parts[1] === 254) return true; // 169.254.0.0/16
+      if (parts[0] === 0) return true; // 0.0.0.0/8
+    }
+    return false;
+  } catch { return true; }
+}
+
 export async function fetchUrlContent(url) {
+  if (isPrivateUrl(url)) return { error: "URL ที่ระบุไม่อนุญาตค่ะ" };
+
   const response = await fetch(url, {
     headers: {
       "User-Agent": "Mozilla/5.0 (compatible; AIBot/1.0)",

@@ -4,10 +4,26 @@ export function escapeHtml(str) {
   return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
+function sanitizeTagAttributes(tag, tagName) {
+  const tn = tagName.toLowerCase();
+  // Closing tags and self-closing: strip all attributes
+  if (tag.startsWith("</")) return `</${tn}>`;
+  // Only <a> gets href (must be http/https/mailto), <code> gets class; all others: no attributes
+  if (tn === "a") {
+    const hrefMatch = tag.match(/href="((?:https?:\/\/|mailto:)[^"]*)"/i);
+    return hrefMatch ? `<a href="${hrefMatch[1]}">` : "<a>";
+  }
+  if (tn === "code") {
+    const classMatch = tag.match(/class="([^"]*)"/i);
+    return classMatch ? `<code class="${classMatch[1]}">` : "<code>";
+  }
+  return `<${tn}>`;
+}
+
 export function sanitizeHtml(text) {
-  // Step 1: Convert or strip unsupported tags
+  // Step 1: Convert or strip unsupported tags, sanitize attributes on allowed tags
   text = text.replace(/<\/?([a-zA-Z][a-zA-Z0-9]*)\b[^>]*\/?>/g, (match, tagName) => {
-    if (ALLOWED_TAGS.has(tagName.toLowerCase())) return match;
+    if (ALLOWED_TAGS.has(tagName.toLowerCase())) return sanitizeTagAttributes(match, tagName);
     // Convert headings to bold
     if (/^h[1-6]$/i.test(tagName)) return match.startsWith("</") ? "</b>" : "<b>";
     // Strip all other unsupported tags (keep content)

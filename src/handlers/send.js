@@ -104,7 +104,11 @@ export async function handleSendCommand(env, message, args) {
       await sendTelegram(env, message.chat.id, "Usage: /send <chat_id> <message>", message.message_id);
       return;
     }
-    const targetChatId = parts[0];
+    const targetChatId = Number(parts[0]);
+    if (!Number.isSafeInteger(targetChatId)) {
+      await sendTelegram(env, message.chat.id, "chat_id ไม่ถูกต้องค่ะ", message.message_id);
+      return;
+    }
     const msg = parts.slice(1).join(" ");
     await sendTelegram(env, targetChatId, msg, null);
     await sendTelegram(env, message.chat.id, "Sent ✓", message.message_id);
@@ -117,9 +121,14 @@ export async function handleSendCommand(env, message, args) {
 export async function handleSendCallback(env, callbackQuery) {
   const parts = callbackQuery.data.split(":");
   const action = parts[1];
-  const targetChatId = parts.slice(2).join(":");
+  const rawChatId = parts.slice(2).join(":");
+  const targetChatId = Number(rawChatId);
 
   const REPLY_KB = getReplyKeyboardMarkup(env);
+
+  if (action !== "a" && action !== "r" && action !== "e" && !Number.isSafeInteger(targetChatId)) {
+    return; // invalid callback data
+  }
   const chatId = callbackQuery.message.chat.id;
 
   if (action === "a") {

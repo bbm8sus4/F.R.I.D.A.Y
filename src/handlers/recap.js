@@ -301,7 +301,7 @@ export async function handleRecapCallback(env, callbackQuery) {
 
       const msgParams = dateRange
         ? [targetChatId, dateRange.startDate, dateRange.endDate]
-        : [targetChatId, new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString()];
+        : [targetChatId, new Date(Date.now() - days * 86400000).toISOString()];
 
       const { results: messages } = await env.DB.prepare(msgQuery).bind(...msgParams).all();
 
