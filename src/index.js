@@ -33,9 +33,26 @@ import { calendarReminder } from './cron/calendar-reminder.js';
 import { dailyDigest } from './cron/daily-digest.js';
 import { conversationCleanup } from './cron/conversation-cleanup.js';
 import { taskReminder } from './cron/task-reminder.js';
+import { sendScheduledMessages } from './cron/scheduled-messages.js';
 
 // In-memory throttle for urgent real-time alerts (per-group, 30 min cooldown)
 const urgentThrottleMap = new Map();
+
+// In-memory rate limiter for member commands (per-user, max 10 per 60s)
+const memberRateMap = new Map();
+const RATE_LIMIT = 10;
+const RATE_WINDOW = 60_000;
+
+function isRateLimited(userId) {
+  const now = Date.now();
+  const entry = memberRateMap.get(userId);
+  if (!entry || now - entry.start > RATE_WINDOW) {
+    memberRateMap.set(userId, { start: now, count: 1 });
+    return false;
+  }
+  entry.count++;
+  return entry.count > RATE_LIMIT;
+}
 
 export default {
   // ===== Webhook Handler =====
@@ -322,6 +339,19 @@ export default {
           parsed.args = parsed.args.replace(new RegExp(`@${botUsername}\\b\\s*`, "i"), "").trim();
         }
 
+        // Audit log — fire and forget
+        ctx.waitUntil(
+          env.DB.prepare(
+            `INSERT INTO audit_log (user_id, username, chat_id, command, args, role) VALUES (?, ?, ?, ?, ?, ?)`
+          ).bind(message.from.id, message.from.username || null, message.chat.id, parsed.cmd, parsed.args.substring(0, 200), role).run().catch(() => {})
+        );
+
+        // Rate limit for members
+        if (role === "member" && isRateLimited(message.from.id)) {
+          ctx.waitUntil(sendTelegram(env, message.chat.id, "คุณใช้คำสั่งเร็วเกินไปค่ะ กรุณารอสักครู่", message.message_id));
+          return new Response("OK", { status: 200 });
+        }
+
         // Member access check
         if (role === "member" && !MEMBER_COMMANDS.has(parsed.cmd)) {
           ctx.waitUntil(sendTelegram(env, message.chat.id, "ฟีเจอร์นี้สำหรับผู้ดูแลระบบเท่านั้นค่ะ", message.message_id));
@@ -473,12 +503,32 @@ export default {
       return new Response("OK", { status: 200 });
     } catch (err) {
       console.error("Worker error:", err);
+      // Alert boss about critical errors
+      try {
+        const bossId = Number(env.BOSS_USER_ID);
+        if (bossId) {
+          ctx.waitUntil(sendTelegram(env, bossId,
+            `⚠️ <b>Worker Error</b>\n\n<code>${(err.message || String(err)).substring(0, 300)}</code>`, null, true));
+        }
+      } catch (_) { /* prevent infinite error loop */ }
       return new Response("OK", { status: 200 });
     }
   },
 
   // ===== Cron Trigger — Proactive Alert + Cleanup ทุก 3 ชม. =====
   async scheduled(event, env, ctx) {
-    ctx.waitUntil(Promise.all([proactiveAlert(env), proactiveInsightAlert(env), summarizeAndCleanup(env), calendarReminder(env), dailyDigest(env), conversationCleanup(env), taskReminder(env)]));
+    const jobs = [proactiveAlert(env), proactiveInsightAlert(env), summarizeAndCleanup(env), calendarReminder(env), dailyDigest(env), conversationCleanup(env), taskReminder(env), sendScheduledMessages(env)];
+    ctx.waitUntil(
+      Promise.allSettled(jobs).then(async (results) => {
+        const failed = results.filter(r => r.status === 'rejected');
+        if (failed.length > 0) {
+          const bossId = Number(env.BOSS_USER_ID);
+          const errors = failed.map(r => r.reason?.message || String(r.reason)).join('\n');
+          await sendTelegram(env, bossId,
+            `⚠️ <b>Cron Error</b> (${failed.length} jobs failed)\n\n<code>${errors.substring(0, 500)}</code>`, null, true
+          ).catch(() => {});
+        }
+      })
+    );
   },
 };

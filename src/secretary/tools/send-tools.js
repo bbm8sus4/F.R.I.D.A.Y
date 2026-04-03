@@ -16,15 +16,16 @@ export const definitions = [
     },
   },
   {
-    name: 'schedule_reminder',
-    description: 'ตั้งเวลาเตือน task ในอนาคต (เก็บใน DB สำหรับ cron)',
+    name: 'schedule_message',
+    description: 'ตั้งเวลาส่งข้อความไปกลุ่ม Telegram ในอนาคต — boss สั่ง "ส่งพรุ่งนี้ 9 โมง" ได้ ต้องระบุ chat_id, ข้อความ, และเวลาส่ง',
     parameters: {
       type: 'OBJECT',
       properties: {
-        task_id: { type: 'INTEGER', description: 'ID ของ task ที่ต้องการเตือน' },
-        remind_at: { type: 'STRING', description: 'วันเวลาที่ต้องการเตือน YYYY-MM-DD HH:MM' },
+        chat_id: { type: 'STRING', description: 'chat_id ของกลุ่มเป้าหมาย' },
+        message: { type: 'STRING', description: 'ข้อความที่จะส่ง' },
+        send_at: { type: 'STRING', description: 'วันเวลาที่ต้องการส่ง (Bangkok time) รูปแบบ YYYY-MM-DD HH:MM' },
       },
-      required: ['task_id', 'remind_at'],
+      required: ['chat_id', 'message', 'send_at'],
     },
   },
 ];
@@ -36,18 +37,18 @@ export const executors = {
     return { success: true, chat_id, message_preview: message.substring(0, 100) };
   },
 
-  async schedule_reminder(env, args) {
-    const { task_id, remind_at } = args;
-    const task = await env.DB.prepare(
-      `SELECT id, title, description FROM tasks WHERE id = ?`
-    ).bind(task_id).first();
-    if (!task) return { error: `ไม่พบ Task #${task_id}` };
+  async schedule_message(env, args, context) {
+    const { chat_id, message, send_at } = args;
+    if (!send_at?.match(/^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}$/)) {
+      return { error: 'รูปแบบเวลาไม่ถูกต้อง ต้องเป็น YYYY-MM-DD HH:MM' };
+    }
 
-    // Store as a comment with source='reminder'
+    const userId = context?.userId || null;
     await env.DB.prepare(
-      `INSERT INTO task_comments (task_id, content, source) VALUES (?, ?, 'reminder')`
-    ).bind(task_id, `Reminder scheduled for ${remind_at}`).run();
+      `INSERT INTO scheduled_messages (target_chat_id, message_text, send_at, created_by)
+       VALUES (?, ?, ?, ?)`
+    ).bind(chat_id, message, send_at, userId).run();
 
-    return { success: true, task_id, remind_at };
+    return { success: true, chat_id, send_at, message_preview: message.substring(0, 80) };
   },
 };
