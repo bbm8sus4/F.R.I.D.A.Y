@@ -365,12 +365,15 @@ export default {
 
       // Auto-detect HTML/PDF files (no command needed) — boss + member
       if (role && !parsed && (hasPdf || hasHtml)) {
-        if (hasHtml) {
-          ctx.waitUntil(handleReadhtmlCommand(env, message, ""));
-        } else if (hasPdf) {
-          ctx.waitUntil(handleReadpdfCommand(env, message, ""));
+        const wouldReachSecretary = isDM || text.includes(`@${botUsername}`);
+        if (wouldReachSecretary && text && role === 'boss') {
+          // Fall through to secretary — it handles PDF/HTML natively
+        } else {
+          // Show keyboard UI (current behavior) — pass text if available
+          if (hasHtml) ctx.waitUntil(handleReadhtmlCommand(env, message, text || ""));
+          else if (hasPdf) ctx.waitUntil(handleReadpdfCommand(env, message, text || ""));
+          return new Response("OK", { status: 200 });
         }
-        return new Response("OK", { status: 200 });
       }
 
       // Handle reply-to-bot interactions

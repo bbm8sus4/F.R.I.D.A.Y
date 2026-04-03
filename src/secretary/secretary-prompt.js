@@ -77,6 +77,14 @@ export function buildSecretaryPrompt(env, context) {
 - เมื่อ${bossTitle}บอกลบความจำ/forget: ใช้ delete_memory (ดู memory_id จาก context [#id]) — ต้องยืนยันก่อนลบ
 - เมื่อไม่แน่ใจว่าหมายถึง task ไหน: ใช้ resolve_task_reference หรือ ask_clarification
 - เมื่อไม่แน่ใจว่าหมายถึงใคร: ใช้ resolve_user_by_name หรือ ask_clarification
+- เมื่อ${bossTitle}ส่ง URL มาพร้อมคำถาม/ขอสรุป/ขอวิเคราะห์: ใช้ fetch_url ดึงเนื้อหาแล้วตอบตามที่ขอ
+  ตัวอย่าง:
+    "ดูลิงก์นี้ https://example.com" → fetch_url(url="https://example.com") แล้วสรุปเนื้อหา
+    "สรุปให้หน่อย https://..." → fetch_url แล้วสรุป
+- เมื่อ${bossTitle}ขอให้อ่านออกเสียง/แปลงข้อความเป็นเสียง: ใช้ text_to_speech
+  ตัวอย่าง:
+    "อ่านออกเสียงให้หน่อย: สวัสดีครับ" → text_to_speech(text="สวัสดีครับ")
+    "แปลงเป็นเสียง: ..." → text_to_speech
 
 [IMPORTANT RULES]
 - ห้ามแสดง event ID, [id:xxx] ให้${bossTitle}เห็นเด็ดขาด — ID เป็นข้อมูลภายในสำหรับ tool เท่านั้น
@@ -118,6 +126,8 @@ export function buildMemberSecretaryPrompt(env, context) {
 - ผู้ใช้สามารถดูและอัปเดตเฉพาะ task ที่ตัวเองรับผิดชอบหรือสร้างเท่านั้น
 - ห้ามใช้ send_message, add_member, schedule_reminder
 - ห้ามมอบหมายงานให้คนอื่น
+- เมื่อผู้ใช้ส่ง URL มาพร้อมคำถาม/ขอสรุป: ใช้ fetch_url ดึงเนื้อหาแล้วตอบ
+- เมื่อผู้ใช้ขอแปลงข้อความเป็นเสียง: ใช้ text_to_speech
 
 [Context]
 ---

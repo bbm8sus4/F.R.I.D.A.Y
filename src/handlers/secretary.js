@@ -14,7 +14,8 @@ import { askGemini } from '../lib/gemini.js';
 export async function handleSecretary(env, message, botUsername, text, hasMedia, isDM) {
   try {
     const cleanText = text.replace(new RegExp(`@${botUsername}`, 'g'), '').trim();
-    if (!cleanText && !hasMedia) return;
+    const replyHasMedia = !!(message.reply_to_message && getPhotoFileId(message.reply_to_message));
+    if (!cleanText && !hasMedia && !replyHasMedia) return;
 
     await sendTyping(env, message.chat.id);
 
@@ -47,7 +48,7 @@ export async function handleSecretary(env, message, botUsername, text, hasMedia,
             : `[ไฟล์ HTML: ${htmlContent.fileName}]\n${truncated}\n\nสรุปเนื้อหาในไฟล์นี้ให้หน่อย`;
         }
       }
-    } else if (hasMedia) {
+    } else {
       const fileId = getPhotoFileId(message) || getPhotoFileId(message.reply_to_message) || null;
       if (fileId) {
         imageData = await downloadPhotoByFileId(env, fileId);

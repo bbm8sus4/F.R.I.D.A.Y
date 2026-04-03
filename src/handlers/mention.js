@@ -102,7 +102,8 @@ export async function handleMention(env, message, botUsername, text, hasMedia, i
 export async function handleMemberChat(env, message, botUsername, text, hasMedia) {
   try {
     const cleanText = text.replace(new RegExp(`@${botUsername}`, "g"), "").trim();
-    if (!cleanText && !hasMedia) return;
+    const replyHasMedia = !!(message.reply_to_message && getPhotoFileId(message.reply_to_message));
+    if (!cleanText && !hasMedia && !replyHasMedia) return;
 
     await sendTyping(env, message.chat.id);
 
