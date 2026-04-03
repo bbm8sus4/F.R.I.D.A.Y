@@ -10,7 +10,6 @@ export async function taskReminder(env) {
     const tomorrow = new Date(now);
     tomorrow.setUTCDate(tomorrow.getUTCDate() + 1);
     const tomorrowStr = tomorrow.toISOString().slice(0, 10);
-    const todayStr = now.toISOString().slice(0, 10);
 
     // Dedup: only send once per day
     const alreadySent = await env.DB.prepare(

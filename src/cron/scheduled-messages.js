@@ -16,6 +16,7 @@ export async function sendScheduledMessages(env) {
     if (results.length === 0) return;
 
     const bossId = Number(env.BOSS_USER_ID);
+    let sentCount = 0;
 
     for (const msg of results) {
       try {
@@ -23,20 +24,18 @@ export async function sendScheduledMessages(env) {
         await env.DB.prepare(
           `UPDATE scheduled_messages SET status = 'sent', sent_at = datetime('now') WHERE id = ?`
         ).bind(msg.id).run();
+        sentCount++;
       } catch (e) {
         console.error(`Scheduled message #${msg.id} failed:`, e.message);
         await env.DB.prepare(
           `UPDATE scheduled_messages SET status = 'failed' WHERE id = ?`
         ).bind(msg.id).run();
-        // Notify boss about failure
         await sendTelegram(env, bossId,
           `❌ ส่งข้อความตั้งเวลา #${msg.id} ไม่สำเร็จ: ${e.message}`, null);
       }
     }
 
-    // Notify boss about sent messages
-    if (results.length > 0) {
-      const sentCount = results.length;
+    if (sentCount > 0) {
       await sendTelegram(env, bossId,
         `📤 ส่งข้อความตั้งเวลาแล้ว ${sentCount} รายการค่ะ`, null);
     }

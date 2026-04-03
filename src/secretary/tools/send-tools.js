@@ -42,6 +42,11 @@ export const executors = {
     if (!send_at?.match(/^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}$/)) {
       return { error: 'รูปแบบเวลาไม่ถูกต้อง ต้องเป็น YYYY-MM-DD HH:MM' };
     }
+    // Validate send_at is in the future (Bangkok time)
+    const sendTime = new Date(send_at.replace(' ', 'T') + ':00+07:00');
+    if (isNaN(sendTime.getTime()) || sendTime.getTime() <= Date.now()) {
+      return { error: 'เวลาที่กำหนดต้องเป็นอนาคตค่ะ' };
+    }
 
     const userId = context?.userId || null;
     await env.DB.prepare(
