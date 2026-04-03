@@ -176,8 +176,31 @@ export async function handleSecretary(env, message, botUsername, text, hasMedia,
       return;
     }
 
-    // No tools used = general question → re-route to askGemini (has Google Search + sources)
+    // No tools used = general question → but first check if AI missed a memory intent
     if (result.noToolsUsed) {
+      const memFallback = fallbackIntentExtraction(cleanText);
+      if (memFallback && memFallback.tool === 'save_memory') {
+        try {
+          const executor = getExecutor('save_memory');
+          if (executor) {
+            const toolResult = await executor(env, memFallback.args, {
+              userId: message.from.id,
+              chatId: message.chat.id,
+              role: 'boss',
+            });
+            if (toolResult.success) {
+              const confirmText = toolResult.duplicate
+                ? `🧠 เคยจำไว้แล้วค่ะ #${toolResult.memory_id} — "${escapeHtml(toolResult.content || '')}" (หมวด: ${toolResult.category})`
+                : `🧠 จำแล้วค่ะ #${toolResult.memory_id} — "${escapeHtml(toolResult.content || '')}" (หมวด: ${toolResult.category})`;
+              await sendTelegram(env, message.chat.id, confirmText, message.message_id, true);
+              return;
+            }
+          }
+        } catch (e) {
+          console.error('Memory fallback in noToolsUsed error:', e.message);
+        }
+      }
+      // Re-route to askGemini (has Google Search + sources)
       try {
         const reply = await askGemini(env, userMessage, context, imageData);
         if (reply) {
@@ -459,6 +482,9 @@ function formatToolResult(toolName, result) {
     return `🗑 ลบนัดหมายแล้ว — "<b>${escapeHtml(result.title || '')}</b>"`;
   }
   if (toolName === 'save_memory') {
+    if (result.duplicate) {
+      return `🧠 เคยจำไว้แล้วค่ะ #${result.memory_id} — "${escapeHtml(result.content || '')}" (หมวด: ${result.category})`;
+    }
     return `🧠 จำแล้วค่ะ #${result.memory_id} — "${escapeHtml(result.content || '')}" (หมวด: ${result.category})`;
   }
   if (toolName === 'delete_memory') {

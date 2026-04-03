@@ -32,7 +32,7 @@ async function autoClassify(env, content) {
 export const definitions = [
   {
     name: 'save_memory',
-    description: 'บันทึกความจำถาวร — จำข้อมูล ข้อเท็จจริง กฎ ความชอบ บุคคล ฯลฯ ที่บอสบอกให้จำ',
+    description: 'บันทึกความจำถาวร — เมื่อบอสขอให้จำ/จดจำ/จำด้วย/อย่าลืม/บันทึก/note/remember ต้องเรียก tool นี้เสมอ ห้ามตอบโดยไม่เรียก tool',
     parameters: {
       type: 'OBJECT',
       properties: {
@@ -60,6 +60,21 @@ export const executors = {
     const { content, category } = args;
     if (!content || !content.trim()) {
       return { error: 'กรุณาระบุเนื้อหาที่จะจำค่ะ' };
+    }
+
+    // Dedup check — exact match
+    const existing = await env.DB
+      .prepare('SELECT id, category FROM memories WHERE content = ?')
+      .bind(content.trim())
+      .first();
+    if (existing) {
+      return {
+        success: true,
+        duplicate: true,
+        memory_id: existing.id,
+        content: content.trim(),
+        category: existing.category,
+      };
     }
 
     // Validate or auto-classify category

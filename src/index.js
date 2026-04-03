@@ -362,6 +362,7 @@ export default {
           "/send": () => handleSendCommand(env, message, parsed.args),
           "/remember": () => handleRememberCommand(env, message, parsed.args),
           "/memories": () => handleMemoriesCommand(env, message),
+          "/mem": () => handleMemoriesCommand(env, message),
           "/forget": () => handleForgetCommand(env, message, parsed.args),
           "/cooldown": () => handleCooldownCommand(env, message, parsed.args),
           "/heatup": () => handleHeatupCommand(env, message, parsed.args),

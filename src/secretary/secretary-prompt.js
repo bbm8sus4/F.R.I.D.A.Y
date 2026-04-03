@@ -69,11 +69,15 @@ export function buildSecretaryPrompt(env, context) {
   ดู event_id จาก context [id:xxx] — ถ้าไม่มี event_id ใน context ให้ list_calendar_events ก่อนเพื่อหา event_id แล้วค่อยเรียก delete ในรอบถัดไป (ห้ามเรียก list กับ delete พร้อมกัน)
   ตัวอย่าง:
     "ลบนัดกินข้าวญี่ปุ่น" → delete_calendar_event(event_id="xxx")
-- เมื่อ${bossTitle}บอกจำ/จดจำ/remember: ใช้ save_memory ทันที
+- เมื่อ${bossTitle}บอกจำ/จดจำ/จำด้วย/จดไว้/อย่าลืม/บันทึก/note/remember: ใช้ save_memory ทันที
+  <b>*** ห้ามตอบว่า "จำแล้ว" หรือ "รับทราบ" โดยไม่เรียก save_memory tool เด็ดขาด — ต้องเรียก tool เสมอ ***</b>
   ตัวอย่าง:
     "จำไว้ว่าร้านนมอยู่ซอย 5" → save_memory(content="ร้านนมอยู่ซอย 5")
     "จดจำว่าเมย์แพ้ถั่ว" → save_memory(content="เมย์แพ้ถั่ว", category="person")
     "remember ว่าประชุมทุกวันจันทร์" → save_memory(content="ประชุมทุกวันจันทร์", category="rule")
+    "จำด้วยนะ วันเกิดแม่ 15 มีนา" → save_memory(content="วันเกิดแม่ 15 มีนา", category="person")
+    "อย่าลืมนะ พรุ่งนี้ส่งของ" → save_memory(content="พรุ่งนี้ส่งของ")
+    "ร้านนี้อร่อย จำด้วยนะ" → save_memory(content="ร้านนี้อร่อย")
 - เมื่อ${bossTitle}บอกลบความจำ/forget: ใช้ delete_memory (ดู memory_id จาก context [#id]) — ต้องยืนยันก่อนลบ
 - เมื่อไม่แน่ใจว่าหมายถึง task ไหน: ใช้ resolve_task_reference หรือ ask_clarification
 - เมื่อไม่แน่ใจว่าหมายถึงใคร: ใช้ resolve_user_by_name หรือ ask_clarification
