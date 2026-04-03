@@ -71,11 +71,28 @@ export async function handleMention(env, message, botUsername, text, hasMedia, i
       userMessage = label;
     }
     const replyMsg = message.reply_to_message;
+    const isReplyToBot = replyMsg?.from?.username === botUsername;
     if (replyMsg && !htmlContent?.text) {
       const replyContent = replyMsg.text || replyMsg.caption || "";
       if (replyContent) {
-        const replyFrom = replyMsg.from?.first_name || replyMsg.from?.username || "Unknown";
-        userMessage = `[Reply ถึงข้อความของ ${replyFrom}: "${replyContent}"]\n\n${cleanText}`;
+        if (isReplyToBot) {
+          // Include bot's prior response + try to find the triggering user message
+          let priorContext = "";
+          try {
+            const priorMsg = await env.DB.prepare(
+              `SELECT message_text FROM messages
+               WHERE chat_id = ? AND message_id < ?
+               ORDER BY message_id DESC LIMIT 1`
+            ).bind(message.chat.id, replyMsg.message_id).first();
+            if (priorMsg?.message_text) {
+              priorContext = `[ข้อความก่อนหน้าของผู้ใช้: "${priorMsg.message_text.substring(0, 300)}"]\n`;
+            }
+          } catch (e) { /* ignore */ }
+          userMessage = `${priorContext}[บอทตอบก่อนหน้า: "${replyContent.substring(0, 500)}"]\n\n${cleanText}`;
+        } else {
+          const replyFrom = replyMsg.from?.first_name || replyMsg.from?.username || "Unknown";
+          userMessage = `[Reply ถึงข้อความของ ${replyFrom}: "${replyContent}"]\n\n${cleanText}`;
+        }
       }
     }
 
@@ -161,12 +178,14 @@ export async function handleMemberChat(env, message, botUsername, text, hasMedia
         : `[ไฟล์ HTML: ${htmlContent.fileName}]\n${truncated}\n\nสรุปเนื้อหาในไฟล์นี้ให้หน่อย`;
     }
     const replyMsg = message.reply_to_message;
+    const isMemberReplyToBot = replyMsg?.from?.username === botUsername;
     if (replyMsg && !htmlContent?.text) {
       const replyContent = replyMsg.text || replyMsg.caption || "";
-      if (replyContent) {
+      if (replyContent && !isMemberReplyToBot) {
         const replyFrom = replyMsg.from?.first_name || replyMsg.from?.username || "Unknown";
         userMessage = `[Reply ถึงข้อความของ ${replyFrom}: "${replyContent}"]\n\n${cleanText}`;
       }
+      // For reply-to-bot: multi-turn is built below in contents array
     }
 
     const memberBotName = env.BOT_NAME || "Friday";
@@ -199,15 +218,39 @@ ${context}
     const model = env.GEMINI_MODEL || "gemini-2.5-pro";
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${env.GEMINI_API_KEY}`;
 
-    const parts = [];
-    if (imageData) {
-      parts.push({ inline_data: { mime_type: imageData.mimeType, data: imageData.base64 } });
+    // Build contents array — multi-turn when replying to bot
+    const contents = [];
+
+    if (isMemberReplyToBot && replyMsg) {
+      const botText = replyMsg.text || replyMsg.caption || "";
+      // Find the user message that triggered the bot's response
+      try {
+        const priorMsg = await env.DB.prepare(
+          `SELECT message_text FROM messages
+           WHERE chat_id = ? AND message_id < ?
+           ORDER BY message_id DESC LIMIT 1`
+        ).bind(message.chat.id, replyMsg.message_id).first();
+        if (priorMsg?.message_text) {
+          contents.push({ role: "user", parts: [{ text: priorMsg.message_text }] });
+        }
+      } catch (e) {
+        console.error("Failed to fetch prior message for member reply chain:", e.message);
+      }
+      if (botText) {
+        contents.push({ role: "model", parts: [{ text: botText }] });
+      }
     }
-    parts.push({ text: userMessage || "อธิบายรูปนี้ให้หน่อย" });
+
+    const currentParts = [];
+    if (imageData) {
+      currentParts.push({ inline_data: { mime_type: imageData.mimeType, data: imageData.base64 } });
+    }
+    currentParts.push({ text: (isMemberReplyToBot ? cleanText : userMessage) || "อธิบายรูปนี้ให้หน่อย" });
+    contents.push({ role: "user", parts: currentParts });
 
     const reqBody = JSON.stringify({
       system_instruction: { parts: [{ text: memberSystemPrompt }] },
-      contents: [{ role: "user", parts }],
+      contents,
       tools: [{ google_search: {} }],
       generationConfig: {
         maxOutputTokens: 8192,

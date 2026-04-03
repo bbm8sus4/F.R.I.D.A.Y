@@ -65,28 +65,58 @@ export async function handleSecretary(env, message, botUsername, text, hasMedia,
       }
     }
 
-    // Attach reply context
+    // Attach reply context & build multi-turn for reply-to-bot
     const replyMsg = message.reply_to_message;
+    const isReplyToBot = replyMsg?.from?.username === botUsername;
+
     if (replyMsg && !isHtml) {
       const replyContent = replyMsg.text || replyMsg.caption || '';
       if (replyContent) {
-        const replyFrom = replyMsg.from?.first_name || replyMsg.from?.username || 'Unknown';
-        userMessage = `[Reply ถึงข้อความของ ${replyFrom}: "${replyContent}"]\n\n${cleanText}`;
+        if (isReplyToBot) {
+          // For askGemini fallback (single-turn), include bot's prior response in context
+          userMessage = `[บอทตอบก่อนหน้า: "${replyContent.substring(0, 500)}"]\n\n${cleanText}`;
+        } else {
+          const replyFrom = replyMsg.from?.first_name || replyMsg.from?.username || 'Unknown';
+          userMessage = `[Reply ถึงข้อความของ ${replyFrom}: "${replyContent}"]\n\n${cleanText}`;
+        }
       }
     }
 
     // Build messages array for tool executor
     const messages = [];
+
+    // For reply-to-bot: build multi-turn conversation history
+    if (isReplyToBot && replyMsg) {
+      const botText = replyMsg.text || replyMsg.caption || '';
+      // Find the user message that triggered the bot's response
+      try {
+        const priorMsg = await env.DB.prepare(
+          `SELECT message_text FROM messages
+           WHERE chat_id = ? AND message_id < ?
+           ORDER BY message_id DESC LIMIT 1`
+        ).bind(message.chat.id, replyMsg.message_id).first();
+        if (priorMsg?.message_text) {
+          messages.push({ role: 'user', content: priorMsg.message_text });
+        }
+      } catch (e) {
+        console.error('Failed to fetch prior message for reply chain:', e.message);
+      }
+      if (botText) {
+        messages.push({ role: 'model', content: botText });
+      }
+    }
+
+    // Add current user message
     if (imageData) {
       messages.push({
         role: 'user',
         parts: [
           { inline_data: { mime_type: imageData.mimeType, data: imageData.base64 } },
-          { text: userMessage || 'อธิบายรูปนี้ให้หน่อย' },
+          { text: (isReplyToBot ? cleanText : userMessage) || 'อธิบายรูปนี้ให้หน่อย' },
         ],
       });
     } else {
-      messages.push({ role: 'user', content: userMessage });
+      messages.push({ role: 'user', content: (isReplyToBot ? cleanText : userMessage) || cleanText });
     }
 
     const systemPrompt = buildSecretaryPrompt(env, context);
