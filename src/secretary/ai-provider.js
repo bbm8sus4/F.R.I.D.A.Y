@@ -58,12 +58,16 @@ class GeminiProvider {
 
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       if (attempt > 0) await new Promise(r => setTimeout(r, 1000 * attempt));
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 60000);
       try {
         response = await fetch(url, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(body),
+          signal: controller.signal,
         });
+        clearTimeout(timeout);
         if (response.ok) break;
         lastError = await response.text();
         const status = response.status;
@@ -71,6 +75,7 @@ class GeminiProvider {
         if (status === 429 || status >= 500) continue;
         break; // 4xx non-429 — don't retry
       } catch (e) {
+        clearTimeout(timeout);
         lastError = e.message;
         console.error(`Secretary Gemini fetch error (attempt ${attempt + 1}/${maxAttempts}):`, e.message);
         if (attempt === maxAttempts - 1) break;

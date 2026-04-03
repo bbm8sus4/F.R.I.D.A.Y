@@ -92,6 +92,9 @@ export async function handleMention(env, message, botUsername, text, hasMedia, i
       } else {
         await sendTelegram(env, message.chat.id, cleanReply, message.message_id, true);
       }
+    } else if (!actionsExecuted) {
+      // AI returned empty reply and no actions executed → send fallback
+      await sendTelegram(env, message.chat.id, "ขออภัยค่ะ ไม่สามารถประมวลผลได้ในตอนนี้ ลองใหม่อีกครั้งนะคะ", message.message_id);
     }
   } catch (err) {
     console.error("handleMention error:", err.message, err.stack);
@@ -193,7 +196,7 @@ export async function handleMemberChat(env, message, botUsername, text, hasMedia
 ${context}
 ---`;
 
-    const model = "gemini-2.5-pro";
+    const model = env.GEMINI_MODEL || "gemini-2.5-pro";
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${env.GEMINI_API_KEY}`;
 
     const parts = [];
@@ -215,8 +218,11 @@ ${context}
     let response, lastError;
     for (let attempt = 0; attempt < 3; attempt++) {
       if (attempt > 0) await new Promise(r => setTimeout(r, 1000 * attempt));
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 60000);
       try {
-        response = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: reqBody });
+        response = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: reqBody, signal: controller.signal });
+        clearTimeout(timeout);
         if (response.ok) break;
         if ([429, 500, 502, 503].includes(response.status) && attempt < 2) {
           lastError = `HTTP ${response.status}`;
@@ -224,6 +230,7 @@ ${context}
         }
         break;
       } catch (e) {
+        clearTimeout(timeout);
         lastError = e.message;
         if (attempt === 2) break;
       }
@@ -243,6 +250,8 @@ ${context}
 
     if (reply) {
       await sendTelegram(env, message.chat.id, reply, message.message_id, true);
+    } else {
+      await sendTelegram(env, message.chat.id, "ขออภัยค่ะ ไม่สามารถประมวลผลได้ในตอนนี้ ลองใหม่อีกครั้งนะคะ", message.message_id);
     }
   } catch (err) {
     console.error("handleMemberChat error:", err.message, err.stack);

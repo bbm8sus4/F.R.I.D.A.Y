@@ -133,11 +133,23 @@ ${context}
   let response;
   let lastError;
   for (let attempt = 0; attempt < 3; attempt++) {
-    response = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: reqBody,
-    });
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 60000);
+    try {
+      response = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: reqBody,
+        signal: controller.signal,
+      });
+      clearTimeout(timeout);
+    } catch (e) {
+      clearTimeout(timeout);
+      lastError = e.message;
+      console.error(`Gemini fetch error (attempt ${attempt + 1}/3):`, e.message);
+      if (attempt < 2) { await new Promise(r => setTimeout(r, 1000 * (attempt + 1))); continue; }
+      break;
+    }
 
     if (response.ok) break;
 
