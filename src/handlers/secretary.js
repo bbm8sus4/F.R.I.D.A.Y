@@ -88,20 +88,23 @@ export async function handleSecretary(env, message, botUsername, text, hasMedia,
     // For reply-to-bot: build multi-turn conversation history
     if (isReplyToBot && replyMsg) {
       const botText = replyMsg.text || replyMsg.caption || '';
+      let hasPriorUser = false;
       // Find the user message that triggered the bot's response
       try {
         const priorMsg = await env.DB.prepare(
           `SELECT message_text FROM messages
-           WHERE chat_id = ? AND message_id < ?
+           WHERE chat_id = ? AND message_id < ? AND user_id = ?
            ORDER BY message_id DESC LIMIT 1`
-        ).bind(message.chat.id, replyMsg.message_id).first();
+        ).bind(message.chat.id, replyMsg.message_id, message.from.id).first();
         if (priorMsg?.message_text) {
           messages.push({ role: 'user', content: priorMsg.message_text });
+          hasPriorUser = true;
         }
       } catch (e) {
         console.error('Failed to fetch prior message for reply chain:', e.message);
       }
-      if (botText) {
+      // Only add model turn if there's a preceding user turn (Gemini requires user-first)
+      if (botText && hasPriorUser) {
         messages.push({ role: 'model', content: botText });
       }
     }
