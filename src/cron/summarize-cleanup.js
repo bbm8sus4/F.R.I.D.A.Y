@@ -169,18 +169,25 @@ export async function summarizeAndCleanup(env) {
     ).run();
     tasksDeleted = taskDeleteResult.meta.changes;
 
-    // 8. นับ memories (เฉพาะ hot) → ถ้าเกิน 200 แจ้งเตือนบอส
-    const { results: memCount } = await env.DB
-      .prepare(`SELECT COUNT(*) as count FROM memories WHERE priority = 'hot'`)
-      .all();
-
-    if (memCount[0].count > 200) {
-      await sendTelegram(
-        env,
-        bossId,
-        `${env.BOT_NAME || "Friday"} Alert — hot memories มี ${memCount[0].count} รายการแล้ว (เกิน 200) อาจต้องจัดระเบียบค่ะนาย\nใช้ /memories ดูรายการ แล้ว /cooldown <id> ลดลำดับ หรือ /forget <id> ลบที่ไม่ใช้`,
-        null
-      );
+    // 8. Auto-decay memories (category-aware)
+    // rule, person, preference → NEVER auto-decay (permanent knowledge)
+    // general, project, task, task_result → hot→warm after 30 days, warm→cold after 60 days
+    const DECAY_EXEMPT = "'rule','person','preference'";
+    const decayHotToWarm = await env.DB.prepare(
+      `UPDATE memories SET priority = 'warm'
+       WHERE priority = 'hot'
+         AND category NOT IN (${DECAY_EXEMPT})
+         AND COALESCE(last_accessed, created_at) < datetime('now', '-30 days')`
+    ).run();
+    const decayWarmToCold = await env.DB.prepare(
+      `UPDATE memories SET priority = 'cold'
+       WHERE priority = 'warm'
+         AND category NOT IN (${DECAY_EXEMPT})
+         AND COALESCE(last_accessed, created_at) < datetime('now', '-60 days')`
+    ).run();
+    const decayed = (decayHotToWarm.meta.changes || 0) + (decayWarmToCold.meta.changes || 0);
+    if (decayed > 0) {
+      console.log(`Memory auto-decay: ${decayHotToWarm.meta.changes || 0} hot→warm, ${decayWarmToCold.meta.changes || 0} warm→cold`);
     }
 
     // ลบ readlink cache เก่ากว่า 24 ชม.

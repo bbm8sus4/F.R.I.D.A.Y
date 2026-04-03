@@ -41,10 +41,12 @@ export async function buildSecretaryContext(env, chatId, isDM, userQuery) {
        FROM tasks WHERE status = 'done' AND completed_at > datetime('now', '-24 hours')
        ORDER BY completed_at DESC LIMIT 5`
     ),
-    // 4: hot memories
+    // 4: hot + warm memories (hot first, warm fills remaining, limit 30)
     db.prepare(
-      `SELECT id, content, category FROM memories
-       WHERE priority = 'hot' ORDER BY created_at DESC LIMIT 30`
+      `SELECT id, content, category, priority FROM memories
+       WHERE priority IN ('hot', 'warm')
+       ORDER BY CASE priority WHEN 'hot' THEN 0 ELSE 1 END, created_at DESC
+       LIMIT 30`
     ),
   ];
 
@@ -75,8 +77,16 @@ export async function buildSecretaryContext(env, chatId, isDM, userQuery) {
   const pendingTasks = results[1].results;
   const blockedTasks = results[2].results;
   const recentDone = results[3].results;
-  const hotMemories = results[4].results;
+  const memories = results[4].results;
   const recentMessages = results[5].results;
+
+  // Track last_accessed for loaded memories (fire-and-forget)
+  if (memories.length > 0) {
+    const ids = memories.map(m => m.id);
+    db.prepare(
+      `UPDATE memories SET last_accessed = datetime('now') WHERE id IN (${ids.join(',')})`
+    ).run().catch(() => {});
+  }
 
   let context = '';
 
@@ -94,10 +104,10 @@ export async function buildSecretaryContext(env, chatId, isDM, userQuery) {
     context += '\n\n';
   }
 
-  // Hot memories
-  if (hotMemories.length > 0) {
+  // Memories (hot + warm)
+  if (memories.length > 0) {
     context += '=== คำสั่ง/ความจำถาวรจากบอส ===\n';
-    context += hotMemories.map(m => `[#${m.id}] (${m.category}) ${m.content}`).join('\n');
+    context += memories.map(m => `[#${m.id}] (${m.category}) ${m.content}`).join('\n');
     context += '\n\n';
   }
 
