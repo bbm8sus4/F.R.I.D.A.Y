@@ -432,7 +432,8 @@ function isPrivateUrl(urlStr) {
     // Block IPv6 private ranges
     const bare = hostname.replace(/^\[|\]$/g, "");
     if (bare === "::1" || bare === "::") return true;
-    if (bare.startsWith("fe80:") || bare.startsWith("fc") || bare.startsWith("fd")) return true;
+    if (bare.startsWith("fe80:")) return true;
+    if ((bare.startsWith("fc") || bare.startsWith("fd")) && bare.includes(":")) return true;
     if (bare.startsWith("::ffff:")) return true; // IPv4-mapped IPv6
     // Block private IPv4 ranges
     const parts = hostname.split(".").map(Number);

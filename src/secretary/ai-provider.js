@@ -112,27 +112,6 @@ class GeminiProvider {
         args: p.functionCall.args || {},
       }));
 
-    // Append Google Search sources if grounding metadata exists
-    const chunks = candidate?.groundingMetadata?.groundingChunks;
-    if (text && chunks?.length) {
-      const seen = new Set();
-      const sources = [];
-      for (const c of chunks) {
-        if (c.web?.uri && !seen.has(c.web.uri)) {
-          seen.add(c.web.uri);
-          const safeUri = c.web.uri.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-          const safeTitle = (c.web.title || c.web.uri).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-          if (c.web.uri.startsWith('http://') || c.web.uri.startsWith('https://')) {
-            sources.push(`• <a href="${safeUri}">${safeTitle}</a>`);
-          }
-          if (sources.length >= 5) break;
-        }
-      }
-      if (sources.length) {
-        text += `\n\n🔗 <b>แหล่งข้อมูล:</b>\n${sources.join("\n")}`;
-      }
-    }
-
     // Build usage info
     const usage = data.usageMetadata || {};
 
