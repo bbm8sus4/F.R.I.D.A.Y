@@ -316,6 +316,7 @@ export default {
           "Tasks": "/tasks",
           "Summary": "/summary",
           "Company": "/company",
+          "Calendar": "/cal",
         };
         const memberShortcutMap = {
           "Tasks": "/tasks",
