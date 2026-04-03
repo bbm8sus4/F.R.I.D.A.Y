@@ -7,7 +7,7 @@ export function createProvider(env) {
 class GeminiProvider {
   constructor(env) {
     this.apiKey = env.GEMINI_API_KEY;
-    this.model = env.GEMINI_MODEL || 'gemini-2.5-flash';
+    this.model = env.GEMINI_MODEL || 'gemini-2.5-pro';
     this.fallbackModel = env.GEMINI_FALLBACK_MODEL || 'gemini-2.5-pro';
     this.temperature = parseFloat(env.GEMINI_TEMPERATURE || '0.2');
     this.maxRetries = parseInt(env.GEMINI_MAX_RETRIES || '2');

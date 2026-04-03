@@ -334,7 +334,7 @@ async function autoClassify(env, content) {
     if (!env.GEMINI_API_KEY) return "general";
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 5000);
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${env.GEMINI_API_KEY}`;
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${env.GEMINI_MODEL || 'gemini-2.5-pro'}:generateContent?key=${env.GEMINI_API_KEY}`;
     const res = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },

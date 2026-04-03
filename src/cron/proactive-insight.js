@@ -227,7 +227,7 @@ export async function proactiveInsightAlert(env) {
 - topic_fingerprint ต้องเป็น keyword ภาษาอังกฤษ ใช้ - คั่น
 - ห้ามแจ้งเรื่องที่อยู่ในรายการ "ALERTS ที่แจ้งไปแล้ว"`;
 
-    const model = "gemini-2.5-flash";
+    const model = env.GEMINI_MODEL || "gemini-2.5-pro";
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${env.GEMINI_API_KEY}`;
 
     const response = await fetch(url, {
