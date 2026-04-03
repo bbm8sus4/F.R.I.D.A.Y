@@ -64,7 +64,7 @@ export function getReplyKeyboardMarkup(env) {
   return {
     keyboard: [
       [{ text: "Tasks" }, { text: "Memories" }, { text: "Summary" }, { text: "Recap" }],
-      [{ text: "Send" }, { text: "Company" }, { text: "Delete" }, ...(env.DASHBOARD_URL ? [{ text: "Dashboard", web_app: { url: env.DASHBOARD_URL } }] : [{ text: "Calendar" }])],
+      [{ text: "Send" }, { text: "Company" }, { text: "Delete" }, { text: "Calendar" }],
     ],
     resize_keyboard: true,
     is_persistent: true,
