@@ -32,6 +32,7 @@ import { summarizeAndCleanup } from './cron/summarize-cleanup.js';
 import { calendarReminder } from './cron/calendar-reminder.js';
 import { dailyDigest } from './cron/daily-digest.js';
 import { conversationCleanup } from './cron/conversation-cleanup.js';
+import { taskReminder } from './cron/task-reminder.js';
 
 // In-memory throttle for urgent real-time alerts (per-group, 30 min cooldown)
 const urgentThrottleMap = new Map();
@@ -478,6 +479,6 @@ export default {
 
   // ===== Cron Trigger — Proactive Alert + Cleanup ทุก 3 ชม. =====
   async scheduled(event, env, ctx) {
-    ctx.waitUntil(Promise.all([proactiveAlert(env), proactiveInsightAlert(env), summarizeAndCleanup(env), calendarReminder(env), dailyDigest(env), conversationCleanup(env)]));
+    ctx.waitUntil(Promise.all([proactiveAlert(env), proactiveInsightAlert(env), summarizeAndCleanup(env), calendarReminder(env), dailyDigest(env), conversationCleanup(env), taskReminder(env)]));
   },
 };

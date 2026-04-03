@@ -17,6 +17,11 @@
     "db:migrate:local": "wrangler d1 migrations apply my-ai-bot-db --local",
     "tail": "wrangler tail",
     "tail:daisy": "wrangler tail --env daisy",
-    "tail:sigma": "wrangler tail --env sigma"
+    "tail:sigma": "wrangler tail --env sigma",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "vitest": "^4.1.2"
   }
 }

@@ -16,6 +16,8 @@ jobs:
       - name: Syntax check all JS modules
         run: |
           for f in $(find src -name '*.js'); do node -c "$f"; done
+      - name: Run tests
+        run: npx vitest run
       - name: Migrate Friday DB
         run: npx wrangler d1 migrations apply my-ai-bot-db --remote
         env:
