@@ -3,6 +3,10 @@ import { escapeHtml, truncateDesc } from '../lib/html-utils.js';
 
 export async function proactiveAlert(env) {
   try {
+    // เตือน task วันละ 1 ครั้ง (รอบ ~10:00 Bangkok = 03:00 UTC)
+    const bangkokHour = (new Date().getUTCHours() + 7) % 24;
+    if (bangkokHour !== 10) return;
+
     const bossId = env.BOSS_USER_ID;
 
     // Group 1: overdue (due_on < today)
