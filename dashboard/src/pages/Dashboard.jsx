@@ -15,8 +15,8 @@ export default function Dashboard({ onNavigate }) {
   return (
     <>
       <div className="stat-cards">
-        <div onClick={() => onNavigate("commitments")} style={{ cursor: "pointer" }}>
-          <StatCard value={data.commitments.pending} label="Pending Tasks" />
+        <div onClick={() => onNavigate("tasks")} style={{ cursor: "pointer" }}>
+          <StatCard value={data.tasks.pending} label="Pending Tasks" />
         </div>
         <div onClick={() => onNavigate("alerts")} style={{ cursor: "pointer" }}>
           <StatCard value={alertTotal} label="Alerts (7d)" />

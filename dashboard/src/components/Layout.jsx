@@ -2,7 +2,7 @@ import React from "react";
 
 const TABS = [
   { id: "dashboard", icon: "📊", label: "Dashboard" },
-  { id: "commitments", icon: "📋", label: "Pending" },
+  { id: "tasks", icon: "📋", label: "Tasks" },
   { id: "alerts", icon: "🔔", label: "Alerts" },
   { id: "summaries", icon: "📝", label: "Summaries" },
 ];

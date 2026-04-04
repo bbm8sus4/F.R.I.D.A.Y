@@ -7,17 +7,17 @@ import EmptyState from "../components/EmptyState";
 
 const STATUS_OPTIONS = [
   { value: "pending", label: "Pending" },
-  { value: "resolved", label: "Resolved" },
+  { value: "done", label: "Done" },
 ];
 
-export default function Commitments() {
+export default function Tasks() {
   const [status, setStatus] = useState("pending");
   const [page, setPage] = useState(1);
   const [selected, setSelected] = useState(new Set());
   const [resolving, setResolving] = useState(false);
 
   const { data, loading, error, refetch } = useApi(
-    `/api/commitments?status=${status}&page=${page}&limit=20`
+    `/api/tasks?status=${status}&page=${page}&limit=20`
   );
 
   const toggleSelect = useCallback((id) => {
@@ -30,57 +30,40 @@ export default function Commitments() {
 
   const [resolveError, setResolveError] = useState(null);
 
-  const resolveOne = useCallback(async (id) => {
+  const markDone = useCallback(async (id) => {
     setResolving(true);
     setResolveError(null);
     try {
-      await apiFetch(`/api/commitments/${id}/resolve`, { method: "PATCH" });
+      await apiFetch(`/api/tasks/${id}/done`, { method: "PATCH" });
       refetch();
       setSelected((prev) => { const n = new Set(prev); n.delete(id); return n; });
     } catch (e) { setResolveError(e.message); } finally { setResolving(false); }
   }, [refetch]);
 
-  const resolveBulk = useCallback(async () => {
+  const markSelectedDone = useCallback(async () => {
     if (selected.size === 0) return;
     setResolving(true);
     setResolveError(null);
     try {
-      await apiFetch("/api/commitments/resolve-bulk", {
-        method: "PATCH",
-        body: JSON.stringify({ ids: [...selected] }),
-      });
+      await Promise.all([...selected].map((id) =>
+        apiFetch(`/api/tasks/${id}/done`, { method: "PATCH" })
+      ));
       setSelected(new Set());
       refetch();
     } catch (e) { setResolveError(e.message); } finally { setResolving(false); }
   }, [selected, refetch]);
 
-  const resolveAll = useCallback(async () => {
-    setResolving(true);
-    setResolveError(null);
-    try {
-      await apiFetch("/api/commitments/resolve-bulk", {
-        method: "PATCH",
-        body: JSON.stringify({ all: true }),
-      });
-      setSelected(new Set());
-      refetch();
-    } catch (e) { setResolveError(e.message); } finally { setResolving(false); }
-  }, [refetch]);
-
   const totalPages = data ? Math.ceil(data.total / 20) : 1;
 
   return (
     <>
-      <div className="page-title">Commitments</div>
+      <div className="page-title">Tasks</div>
       <FilterBar options={STATUS_OPTIONS} value={status} onChange={(v) => { setStatus(v); setPage(1); setSelected(new Set()); }} />
 
       {selected.size > 0 && status === "pending" && (
         <div className="bulk-bar">
           <span>{selected.size} selected</span>
-          <div style={{ display: "flex", gap: 8 }}>
-            <button onClick={resolveBulk} disabled={resolving}>Resolve Selected</button>
-            <button onClick={resolveAll} disabled={resolving}>Resolve All</button>
-          </div>
+          <button onClick={markSelectedDone} disabled={resolving}>Mark Done</button>
         </div>
       )}
 
@@ -88,32 +71,32 @@ export default function Commitments() {
       {(error || resolveError) && <div className="error-state">Error: {error || resolveError}</div>}
 
       {!loading && data?.data?.length === 0 && (
-        <EmptyState message={status === "pending" ? "No pending commitments" : "No resolved commitments"} />
+        <EmptyState message={status === "pending" ? "No pending tasks" : "No completed tasks"} />
       )}
 
-      {!loading && data?.data?.map((c) => (
-        <div key={c.id} className="list-item">
+      {!loading && data?.data?.map((t) => (
+        <div key={t.id} className="list-item">
           {status === "pending" && (
             <div
-              className={`checkbox ${selected.has(c.id) ? "checked" : ""}`}
-              onClick={() => toggleSelect(c.id)}
+              className={`checkbox ${selected.has(t.id) ? "checked" : ""}`}
+              onClick={() => toggleSelect(t.id)}
             >
-              {selected.has(c.id) && "✓"}
+              {selected.has(t.id) && "✓"}
             </div>
           )}
           <div className="content">
-            <div className="title">{c.promise_text}</div>
+            <div className="title">{t.description}</div>
             <div className="meta">
-              #{c.id} — {c.username ? `@${c.username}` : c.first_name || "Unknown"} — {c.created_at}
+              #{t.id}{t.due_on ? ` — Due: ${t.due_on}` : ""} — {t.created_at}
             </div>
           </div>
           <div className="actions">
             {status === "pending" ? (
-              <button className="btn btn-primary" onClick={() => resolveOne(c.id)} disabled={resolving}>
-                Resolve
+              <button className="btn btn-primary" onClick={() => markDone(t.id)} disabled={resolving}>
+                Done
               </button>
             ) : (
-              <Badge type="resolved">Resolved</Badge>
+              <Badge type="resolved">Done</Badge>
             )}
           </div>
         </div>
