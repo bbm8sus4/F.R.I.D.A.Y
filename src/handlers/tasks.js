@@ -39,6 +39,11 @@ export async function handleTaskCommand(env, message, args) {
     }
   } catch (err) {
     console.error("handleTaskCommand error:", err);
+    try {
+      await sendTelegram(env, message.chat.id,
+        `⚠️ สร้าง Task ไม่สำเร็จค่ะ: ${err.message || 'เกิดข้อผิดพลาด'}`,
+        message.message_id);
+    } catch (_) { /* swallow secondary send failure */ }
   }
 }
 
@@ -131,6 +136,11 @@ export async function handleTasksCommand(env, message) {
     }
   } catch (err) {
     console.error("handleTasksCommand error:", err);
+    try {
+      await sendTelegram(env, message.chat.id,
+        `⚠️ โหลดรายการ Tasks ไม่สำเร็จค่ะ: ${err.message || 'เกิดข้อผิดพลาด'}`,
+        message.message_id);
+    } catch (_) { /* swallow secondary send failure */ }
   }
 }
 
@@ -160,6 +170,11 @@ export async function handleDoneCommand(env, message, args) {
     await sendTelegram(env, message.chat.id, msg, message.message_id);
   } catch (err) {
     console.error("handleDoneCommand error:", err);
+    try {
+      await sendTelegram(env, message.chat.id,
+        `⚠️ ปิด Task ไม่สำเร็จค่ะ: ${err.message || 'เกิดข้อผิดพลาด'}`,
+        message.message_id);
+    } catch (_) { /* swallow secondary send failure */ }
   }
 }
 
@@ -185,6 +200,11 @@ export async function handleCancelCommand(env, message, args) {
     await sendTelegram(env, message.chat.id, `❌ ยกเลิก Task #${taskId} แล้วค่ะ — "${task.description}"`, message.message_id);
   } catch (err) {
     console.error("handleCancelCommand error:", err);
+    try {
+      await sendTelegram(env, message.chat.id,
+        `⚠️ ยกเลิก Task ไม่สำเร็จค่ะ: ${err.message || 'เกิดข้อผิดพลาด'}`,
+        message.message_id);
+    } catch (_) { /* swallow secondary send failure */ }
   }
 }
 
@@ -199,7 +219,7 @@ export async function handleTaskCallback(env, callbackQuery) {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ callback_query_id: callbackQuery.id }),
-  });
+  }).catch(e => console.error("tk answerCallbackQuery error:", e.message));
 
   try {
     // History view
@@ -444,5 +464,9 @@ export async function handleTaskCallback(env, callbackQuery) {
     }
   } catch (err) {
     console.error("handleTaskCallback error:", err);
+    try {
+      await sendTelegram(env, chatId,
+        `⚠️ ดำเนินการไม่สำเร็จค่ะ: ${err.message || 'เกิดข้อผิดพลาด'}`, null);
+    } catch (_) { /* swallow secondary send failure */ }
   }
 }

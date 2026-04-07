@@ -45,10 +45,19 @@ export default function Tasks() {
     setResolving(true);
     setResolveError(null);
     try {
-      await Promise.all([...selected].map((id) =>
+      const ids = [...selected];
+      const results = await Promise.allSettled(ids.map((id) =>
         apiFetch(`/api/tasks/${id}/done`, { method: "PATCH" })
       ));
-      setSelected(new Set());
+      const failedIds = ids.filter((_, i) => results[i].status === "rejected");
+      if (failedIds.length > 0) {
+        const firstErr = results.find(r => r.status === "rejected")?.reason?.message || "Unknown error";
+        setResolveError(`Failed ${failedIds.length}/${ids.length}: ${firstErr}`);
+        // Keep failed ids selected so the user can retry
+        setSelected(new Set(failedIds));
+      } else {
+        setSelected(new Set());
+      }
       refetch();
     } catch (e) { setResolveError(e.message); } finally { setResolving(false); }
   }, [selected, refetch]);

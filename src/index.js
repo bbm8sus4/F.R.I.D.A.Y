@@ -68,8 +68,9 @@ export default {
       return new Response(`${env.BOT_NAME || "Friday"} is watching.`, { status: 200 });
     }
 
+    let update;
     try {
-      const update = await request.json();
+      update = await request.json();
 
       // Handle callback queries (inline keyboard buttons) — role-based
       const callbackQuery = update.callback_query;
@@ -85,7 +86,7 @@ export default {
               text: "คุณไม่มีสิทธิ์ใช้ฟังก์ชันนี้ค่ะ",
               show_alert: true,
             }),
-          });
+          }).catch(e => console.error("answerCallbackQuery (no role) error:", e.message));
           return new Response("OK", { status: 200 });
         }
         if (cbRole === "member" && !MEMBER_CALLBACKS.has(cbPrefix)) {
@@ -97,7 +98,7 @@ export default {
               text: "ฟังก์ชันนี้สำหรับผู้ดูแลระบบเท่านั้นค่ะ",
               show_alert: true,
             }),
-          });
+          }).catch(e => console.error("answerCallbackQuery (member-denied) error:", e.message));
           return new Response("OK", { status: 200 });
         }
         if (callbackQuery.data?.startsWith("rl:")) {
@@ -505,12 +506,18 @@ export default {
       return new Response("OK", { status: 200 });
     } catch (err) {
       console.error("Worker error:", err);
-      // Alert boss about critical errors
+      // Alert boss about critical errors + apologize to originating chat if possible
       try {
         const bossId = Number(env.BOSS_USER_ID);
         if (bossId) {
           ctx.waitUntil(sendTelegram(env, bossId,
             `⚠️ <b>Worker Error</b>\n\n<code>${(err.message || String(err)).substring(0, 300)}</code>`, null, true));
+        }
+        // Best-effort apology to the user whose message triggered the error
+        const errChatId = update?.message?.chat?.id || update?.edited_message?.chat?.id || update?.callback_query?.message?.chat?.id;
+        if (errChatId && errChatId !== bossId) {
+          ctx.waitUntil(sendTelegram(env, errChatId,
+            'ขออภัยค่ะนาย ระบบมีปัญหาชั่วคราว กรุณาลองใหม่อีกครั้งนะคะ', null).catch(() => {}));
         }
       } catch (_) { /* prevent infinite error loop */ }
       return new Response("OK", { status: 200 });

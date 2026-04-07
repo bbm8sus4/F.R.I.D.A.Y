@@ -135,6 +135,9 @@ ${context}
   for (let attempt = 0; attempt < 3; attempt++) {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 60000);
+    // Reset response each iteration so a prior attempt's value can't leak
+    // into the post-loop check if the next attempt throws.
+    response = null;
     try {
       response = await fetch(url, {
         method: "POST",
@@ -165,7 +168,7 @@ ${context}
     break;
   }
 
-  if (!response.ok) {
+  if (!response || !response.ok) {
     return "ขออภัย ไม่สามารถประมวลผลได้ในตอนนี้";
   }
 

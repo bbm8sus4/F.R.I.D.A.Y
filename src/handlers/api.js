@@ -1,9 +1,14 @@
 import { validateTelegramWebApp } from "../lib/auth.js";
 
 export async function handleApiRequest(request, url, env) {
+  // Fail-closed CORS: when DASHBOARD_URL is unset, emit an origin that will
+  // never match a browser request, effectively blocking cross-origin calls.
+  // (Server-to-server / Telegram WebApp with Authorization header still works
+  // because CORS is a browser-side restriction.)
+  const allowOrigin = env.DASHBOARD_URL || "null";
   const headers = {
     "Content-Type": "application/json",
-    "Access-Control-Allow-Origin": env.DASHBOARD_URL || "*",
+    "Access-Control-Allow-Origin": allowOrigin,
     "Access-Control-Allow-Methods": "GET, POST, PATCH, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type, Authorization",
   };

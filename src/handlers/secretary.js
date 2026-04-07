@@ -233,16 +233,21 @@ export async function handleSecretary(env, message, botUsername, text, hasMedia,
           console.error('Memory fallback in noToolsUsed error:', e.message);
         }
       }
-      // Re-route to askGemini (has Google Search + sources)
-      try {
-        const reply = await askGemini(env, userMessage, context, imageData);
-        if (reply) {
-          await sendTelegram(env, message.chat.id, reply, message.message_id, true);
-          return;
+      // Re-route to askGemini (has Google Search + sources) only if secretary
+      // produced no text. If it already produced text (e.g. image description,
+      // translation, general answer), use it directly — re-running a vision
+      // model a second time can exceed the Worker waitUntil budget.
+      if (!result.text) {
+        try {
+          const reply = await askGemini(env, userMessage, context, imageData);
+          if (reply) {
+            await sendTelegram(env, message.chat.id, reply, message.message_id, true);
+            return;
+          }
+        } catch (e) {
+          console.error('askGemini re-route error:', e.message);
+          // Fall through to secretary's own response
         }
-      } catch (e) {
-        console.error('askGemini re-route error:', e.message);
-        // Fall through to secretary's own response
       }
     }
 
@@ -332,22 +337,47 @@ export async function handleSecretaryContinue(env, message, activeConvo, text, i
 export async function handleSecretaryCallback(env, callbackQuery) {
   const chatId = callbackQuery.message.chat.id;
   const messageId = callbackQuery.message.message_id;
-  const data = callbackQuery.data;
+  const data = callbackQuery.data || '';
   const parts = data.split(':');
+  if (parts.length < 3) {
+    await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/answerCallbackQuery`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ callback_query_id: callbackQuery.id }),
+    }).catch(e => console.error('answerCallbackQuery (malformed) error:', e.message));
+    return;
+  }
   const action = parts[1]; // confirm, cancel, edit, opt
   const targetUserId = Number(parts[2]);
+  if (!Number.isFinite(targetUserId)) {
+    await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/answerCallbackQuery`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ callback_query_id: callbackQuery.id }),
+    }).catch(e => console.error('answerCallbackQuery (bad uid) error:', e.message));
+    return;
+  }
+
+  // Only the original user can interact — reply with alert so other users get feedback
+  if (callbackQuery.from.id !== targetUserId) {
+    await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/answerCallbackQuery`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        callback_query_id: callbackQuery.id,
+        text: 'ปุ่มนี้สำหรับผู้ใช้คนอื่นค่ะ',
+        show_alert: true,
+      }),
+    }).catch(e => console.error('answerCallbackQuery (auth) error:', e.message));
+    return;
+  }
 
   // Answer callback immediately
   await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/answerCallbackQuery`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ callback_query_id: callbackQuery.id }),
-  });
-
-  // Only the original user can interact
-  if (callbackQuery.from.id !== targetUserId) {
-    return;
-  }
+  }).catch(e => console.error('answerCallbackQuery error:', e.message));
 
   try {
     if (action === 'cancel') {
@@ -403,14 +433,21 @@ export async function handleSecretaryCallback(env, callbackQuery) {
     if (action === 'opt') {
       // Option selected from clarification
       const optIndex = Number(parts[3]);
+      if (!Number.isFinite(optIndex) || optIndex < 0) {
+        await editMessage(env, chatId, messageId, 'ข้อมูลตัวเลือกไม่ถูกต้องค่ะ ลองใหม่');
+        return;
+      }
       const convo = await getConvoForCallback(env.DB, chatId, targetUserId);
       if (!convo) {
         await editMessage(env, chatId, messageId, 'หมดอายุแล้วค่ะ ลองใหม่');
         return;
       }
 
-      // Get the selected option text from the button
-      const selectedText = callbackQuery.message.reply_markup?.inline_keyboard?.[optIndex]?.[0]?.text || `option ${optIndex}`;
+      // Get the selected option text from the button (bounds-checked)
+      const keyboard = callbackQuery.message.reply_markup?.inline_keyboard;
+      const selectedText =
+        (Array.isArray(keyboard) && optIndex < keyboard.length && keyboard[optIndex]?.[0]?.text) ||
+        `option ${optIndex}`;
 
       // Continue conversation with selected option
       const messages = convo.data.messages || [];

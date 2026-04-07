@@ -22,7 +22,7 @@ async function editMessage(env, chatId, messageId, text, buttons) {
       link_preview_options: { is_disabled: true },
       reply_markup: { inline_keyboard: buttons },
     }),
-  });
+  }).catch(e => console.error("memory editMessage error:", e.message));
 }
 
 function answerCallback(env, callbackQueryId) {
@@ -384,6 +384,11 @@ export async function handleRememberCommand(env, message, args) {
     await sendTelegram(env, message.chat.id, `จำแล้วค่ะนาย (ID: #${meta.last_row_id}, หมวด: ${category})`, message.message_id);
   } catch (err) {
     console.error("handleRememberCommand error:", err);
+    try {
+      await sendTelegram(env, message.chat.id,
+        `⚠️ บันทึกความจำไม่สำเร็จค่ะ: ${err.message || 'เกิดข้อผิดพลาด'}`,
+        message.message_id);
+    } catch (_) { /* swallow */ }
   }
 }
 
@@ -418,6 +423,11 @@ export async function handleMemoriesCommand(env, message) {
     await sendTelegram(env, message.chat.id, reply, message.message_id);
   } catch (err) {
     console.error("handleMemoriesCommand error:", err);
+    try {
+      await sendTelegram(env, message.chat.id,
+        `⚠️ โหลดความจำไม่สำเร็จค่ะ: ${err.message || 'เกิดข้อผิดพลาด'}`,
+        message.message_id);
+    } catch (_) { /* swallow */ }
   }
 }
 
@@ -439,6 +449,11 @@ export async function handleCooldownCommand(env, message, args) {
     }
   } catch (err) {
     console.error("handleCooldownCommand error:", err);
+    try {
+      await sendTelegram(env, message.chat.id,
+        `⚠️ ปรับ priority ไม่สำเร็จค่ะ: ${err.message || 'เกิดข้อผิดพลาด'}`,
+        message.message_id);
+    } catch (_) { /* swallow */ }
   }
 }
 
@@ -460,6 +475,11 @@ export async function handleHeatupCommand(env, message, args) {
     }
   } catch (err) {
     console.error("handleHeatupCommand error:", err);
+    try {
+      await sendTelegram(env, message.chat.id,
+        `⚠️ ปรับ priority ไม่สำเร็จค่ะ: ${err.message || 'เกิดข้อผิดพลาด'}`,
+        message.message_id);
+    } catch (_) { /* swallow */ }
   }
 }
 
@@ -479,5 +499,10 @@ export async function handleForgetCommand(env, message, args) {
     await sendTelegram(env, message.chat.id, `ลบความจำ ${label} แล้วค่ะนาย`, message.message_id);
   } catch (err) {
     console.error("handleForgetCommand error:", err);
+    try {
+      await sendTelegram(env, message.chat.id,
+        `⚠️ ลบความจำไม่สำเร็จค่ะ: ${err.message || 'เกิดข้อผิดพลาด'}`,
+        message.message_id);
+    } catch (_) { /* swallow */ }
   }
 }

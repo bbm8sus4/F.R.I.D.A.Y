@@ -99,7 +99,7 @@ export async function handleCompanyCallback(env, callbackQuery) {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ callback_query_id: callbackQuery.id }),
-  });
+  }).catch(e => console.error("co answerCallbackQuery error:", e.message));
 
   try {
     // Ensure companies table exists
@@ -266,6 +266,10 @@ export async function handleCompanyCallback(env, callbackQuery) {
     }
   } catch (err) {
     console.error("handleCompanyCallback error:", err);
+    try {
+      await sendTelegram(env, chatId,
+        `⚠️ ดำเนินการไม่สำเร็จค่ะ: ${err.message || 'เกิดข้อผิดพลาด'}`, null);
+    } catch (_) { /* swallow */ }
   }
 }
 

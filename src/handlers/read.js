@@ -50,6 +50,8 @@ export async function handleReadhtmlCommand(env, message, args) {
       const { cleanReply } = await parseAndExecuteActions(env, reply);
       if (cleanReply) {
         await sendTelegram(env, message.chat.id, cleanReply, message.message_id, true);
+      } else {
+        await sendTelegram(env, message.chat.id, "ขออภัยค่ะ ไม่สามารถประมวลผลไฟล์นี้ได้ ลองใหม่อีกครั้งนะคะ", message.message_id);
       }
       return;
     }
@@ -126,6 +128,8 @@ export async function handleReadpdfCommand(env, message, args) {
       const { cleanReply } = await parseAndExecuteActions(env, reply);
       if (cleanReply) {
         await sendTelegram(env, message.chat.id, cleanReply, message.message_id, true);
+      } else {
+        await sendTelegram(env, message.chat.id, "ขออภัยค่ะ ไม่สามารถประมวลผลไฟล์ PDF ได้ ลองใหม่อีกครั้งนะคะ", message.message_id);
       }
       return;
     }
@@ -196,6 +200,8 @@ export async function handleReadimgCommand(env, message, args) {
       const { cleanReply } = await parseAndExecuteActions(env, reply);
       if (cleanReply) {
         await sendTelegram(env, message.chat.id, cleanReply, message.message_id, true);
+      } else {
+        await sendTelegram(env, message.chat.id, "ขออภัยค่ะ ไม่สามารถประมวลผลรูปนี้ได้ ลองใหม่อีกครั้งนะคะ", message.message_id);
       }
       return;
     }
@@ -344,6 +350,8 @@ export async function handleFileCallback(env, callbackQuery) {
     const { cleanReply } = await parseAndExecuteActions(env, reply);
     if (cleanReply) {
       await sendTelegram(env, chatId, cleanReply, null, true);
+    } else {
+      await sendTelegram(env, chatId, "ขออภัยค่ะ ไม่สามารถประมวลผลไฟล์นี้ได้ กรุณาลองใหม่อีกครั้ง", null);
     }
     await editPreview(`${originalText}\n\n✅ <b>${modeLabels[mode]}แล้ว</b>`);
   } catch (err) {
@@ -391,6 +399,8 @@ export async function handleFileAsk(env, message, cacheId, question) {
   const { cleanReply } = await parseAndExecuteActions(env, reply);
   if (cleanReply) {
     await sendTelegram(env, message.chat.id, cleanReply, message.message_id, true);
+  } else {
+    await sendTelegram(env, message.chat.id, "ขออภัยค่ะ ไม่สามารถตอบคำถามนี้ได้ ลองถามใหม่อีกครั้งนะคะ", message.message_id);
   }
 }
 
@@ -641,6 +651,8 @@ export async function handleReadlinkCallback(env, callbackQuery) {
     const { cleanReply } = await parseAndExecuteActions(env, reply);
     if (cleanReply) {
       await sendTelegram(env, chatId, cleanReply, null, true);
+    } else {
+      await sendTelegram(env, chatId, "ขออภัยค่ะ ไม่สามารถประมวลผลเนื้อหาลิงก์นี้ได้ กรุณาลองใหม่อีกครั้ง", null);
     }
 
     // อัพเดทสถานะเป็นเสร็จ
@@ -670,5 +682,7 @@ export async function handleReadlinkAsk(env, message, cacheId, question) {
   const { cleanReply } = await parseAndExecuteActions(env, reply);
   if (cleanReply) {
     await sendTelegram(env, message.chat.id, cleanReply, message.message_id, true);
+  } else {
+    await sendTelegram(env, message.chat.id, "ขออภัยค่ะ ไม่สามารถตอบคำถามนี้ได้ ลองถามใหม่อีกครั้งนะคะ", message.message_id);
   }
 }
