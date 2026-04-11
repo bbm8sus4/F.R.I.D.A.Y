@@ -11,10 +11,11 @@ migrations_dir = "migrations"
 
 [vars]
 DASHBOARD_URL = "https://friday-dashboard-3rf.pages.dev"
+WORKER_URL = "https://my-ai-bot.friday-bot.workers.dev"
 BOT_NAME = "Friday"
 BOSS_NICKNAMES = '["บ๊อบ","บ๊อบบี้","จารย์บ๊อบ","พี่บ๊อบ","ครับบ๊อบ","บ๊อบครับ","พ่อใหญ่บ๊อบ","bob"]'
-GEMINI_MODEL = "gemini-2.5-pro"
-GEMINI_FALLBACK_MODEL = "gemini-2.5-pro"
+GEMINI_MODEL = "gemini-2.5-flash"
+GEMINI_FALLBACK_MODEL = "gemini-2.5-flash"
 GEMINI_TEMPERATURE = "0.2"
 GEMINI_MAX_RETRIES = "2"
 
@@ -32,12 +33,13 @@ database_id = "31aeb88c-4b94-45ff-b2fc-2d6eb4c027d8"
 migrations_dir = "migrations"
 
 [env.daisy.vars]
-DASHBOARD_URL = ""
+DASHBOARD_URL = "https://friday-dashboard-3rf.pages.dev"
+WORKER_URL = "https://daisy-ai-bot.friday-bot.workers.dev"
 BOT_NAME = "Daisy"
 BOSS_TITLE = "นาย"
 BOSS_NICKNAMES = '["วุทธ","พี่วุทธ","วุฒิ","woot","W","วัชรินทร์","Watcharin","Woot"]'
-GEMINI_MODEL = "gemini-2.5-pro"
-GEMINI_FALLBACK_MODEL = "gemini-2.5-pro"
+GEMINI_MODEL = "gemini-2.5-flash"
+GEMINI_FALLBACK_MODEL = "gemini-2.5-flash"
 GEMINI_TEMPERATURE = "0.2"
 GEMINI_MAX_RETRIES = "2"
 
@@ -55,12 +57,13 @@ database_id = "1bfab5e2-9421-45e8-a86d-413d9647ddce"
 migrations_dir = "migrations"
 
 [env.sigma.vars]
-DASHBOARD_URL = ""
+DASHBOARD_URL = "https://friday-dashboard-3rf.pages.dev"
+WORKER_URL = "https://sigma-ai-bot.friday-bot.workers.dev"
 BOT_NAME = "Sigma"
 BOSS_TITLE = "คุณ"
 BOSS_NICKNAMES = '["มิว","มิวว์","Meu","EMUS","emus","Mew","mew","พี่มิว","พี่มิวว์","น้องมิว","คุณมิว"]'
-GEMINI_MODEL = "gemini-2.5-pro"
-GEMINI_FALLBACK_MODEL = "gemini-2.5-pro"
+GEMINI_MODEL = "gemini-2.5-flash"
+GEMINI_FALLBACK_MODEL = "gemini-2.5-flash"
 GEMINI_TEMPERATURE = "0.2"
 GEMINI_MAX_RETRIES = "2"
 

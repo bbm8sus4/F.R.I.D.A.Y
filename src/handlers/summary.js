@@ -588,7 +588,7 @@ export async function generateDailySummary(env, groupTitle, conversationText, da
 3. ส่งของล่าช้า 3 วัน แก้แล้ว
 ⚠️ ยังไม่ได้ใบ PO จาก XYZ`;
 
-  const model = env.GEMINI_MODEL || "gemini-2.5-pro";
+  const model = "gemini-2.5-flash";
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${env.GEMINI_API_KEY}`;
 
   const response = await fetch(url, {
@@ -626,7 +626,7 @@ export async function generateSummary(env, groupTitle, conversationText) {
 - ห้ามบทนำ ห้ามหัวข้อหมวด ห้าม markdown ห้ามสรุปท้าย
 - ตอบภาษาไทย`;
 
-  const model = env.GEMINI_MODEL || "gemini-2.5-pro";
+  const model = "gemini-2.5-flash";
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${env.GEMINI_API_KEY}`;
 
   const response = await fetch(url, {

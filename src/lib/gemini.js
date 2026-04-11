@@ -1,4 +1,6 @@
-export async function askGemini(env, userMessage, context, imageData) {
+import { logAIUsage } from '../secretary/ai-logger.js';
+
+export async function askGemini(env, userMessage, context, imageData, { feature, chatId } = {}) {
   const botName = env.BOT_NAME || "Friday";
   const bossTitle = env.BOSS_TITLE || "นาย";
   const systemPrompt = `[Role & Identity]
@@ -110,7 +112,7 @@ export async function askGemini(env, userMessage, context, imageData) {
 ${context}
 ---`;
 
-  const model = "gemini-2.5-pro";
+  const model = "gemini-2.5-flash";
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${env.GEMINI_API_KEY}`;
 
   const parts = [];
@@ -125,7 +127,7 @@ ${context}
     tools: [{ google_search: {} }],
     generationConfig: {
       maxOutputTokens: 8192,
-      thinkingConfig: { thinkingBudget: 2048 },
+      thinkingConfig: { thinkingBudget: 1024 },
     },
   });
 
@@ -183,6 +185,19 @@ ${context}
   // เช็ค safety block
   if (data.candidates?.[0]?.finishReason === "SAFETY") {
     return "ขออภัย ข้อความถูกบล็อกโดยตัวกรองความปลอดภัย";
+  }
+
+  // Log usage
+  const usage = data.usageMetadata;
+  if (usage && env.DB) {
+    logAIUsage(env.DB, {
+      chatId,
+      feature: feature || 'askGemini',
+      model,
+      inputTokens: usage.promptTokenCount || 0,
+      outputTokens: (usage.candidatesTokenCount || 0) + (usage.thoughtsTokenCount || 0),
+      success: true,
+    });
   }
 
   // Gemini 2.5 Pro มี thinking parts — ต้องหา text part สุดท้ายที่ไม่ใช่ thought

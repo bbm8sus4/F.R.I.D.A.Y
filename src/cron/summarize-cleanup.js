@@ -62,75 +62,70 @@ export async function summarizeAndCleanup(env) {
       }
     }
 
-    // === Weekly summaries + message cleanup (เก่ากว่า 30 วัน) ===
+    // === Weekly summaries: รวม daily summaries 7 วัน (ทุกวันจันทร์) ===
+    const bangkokDay = new Date(Date.now() + 7 * 3600000).getUTCDay();
+    if (bangkokDay === 1) { // Monday
+      const weekEnd = new Date(Date.now() + 7 * 3600000 - 86400000).toISOString().slice(0, 10); // yesterday (Sunday)
+      const weekStart = new Date(Date.now() + 7 * 3600000 - 7 * 86400000).toISOString().slice(0, 10); // 7 days ago (Monday)
 
-    // 1. หากลุ่มที่มีข้อความเก่ากว่า 30 วัน (LIMIT 10 กลุ่มต่อ cron run)
-    const { results: groups } = await env.DB
+      const { results: weeklyGroups } = await env.DB
+        .prepare(
+          `SELECT DISTINCT chat_id, chat_title FROM summaries
+           WHERE summary_type = 'daily' AND summary_date BETWEEN ? AND ?
+           AND chat_id NOT IN (
+             SELECT chat_id FROM summaries WHERE summary_type = 'weekly' AND week_start = ? AND week_end = ?
+           )`
+        )
+        .bind(weekStart, weekEnd, weekStart, weekEnd)
+        .all();
+
+      for (const g of weeklyGroups) {
+        const { results: dailies } = await env.DB
+          .prepare(
+            `SELECT summary_text, summary_date, message_count FROM summaries
+             WHERE chat_id = ? AND summary_type = 'daily' AND summary_date BETWEEN ? AND ?
+             ORDER BY summary_date ASC`
+          )
+          .bind(g.chat_id, weekStart, weekEnd)
+          .all();
+
+        if (dailies.length === 0) continue;
+
+        const totalMsgs = dailies.reduce((s, d) => s + (d.message_count || 0), 0);
+        const weeklyText = dailies.map(d => `📅 ${d.summary_date}\n${d.summary_text}`).join("\n\n");
+
+        await env.DB
+          .prepare(
+            `INSERT INTO summaries (chat_id, chat_title, week_start, week_end, summary_text, message_count, summary_type, summary_date)
+             VALUES (?, ?, ?, ?, ?, ?, 'weekly', ?)`
+          )
+          .bind(g.chat_id, g.chat_title, weekStart, weekEnd, weeklyText, totalMsgs, weekEnd)
+          .run();
+        totalSummaries++;
+      }
+    }
+
+    // === Message cleanup (เก่ากว่า 30 วัน, เฉพาะวันที่มี daily summary แล้ว) ===
+    const { results: cleanupGroups } = await env.DB
       .prepare(
-        `SELECT DISTINCT chat_id, chat_title FROM messages
-         WHERE created_at < datetime('now', '-30 days') AND chat_title IS NOT NULL
-         LIMIT 10`
+        `SELECT DISTINCT m.chat_id FROM messages m
+         WHERE m.created_at < datetime('now', '-30 days') LIMIT 10`
       )
       .all();
 
-    for (const group of groups) {
-      // 2. ดึงข้อความเก่าของกลุ่มนี้ (LIMIT 500)
-      const { results: oldMessages } = await env.DB
-        .prepare(
-          `SELECT username, first_name, message_text, datetime(created_at, '+7 hours') as created_at
-           FROM messages
-           WHERE chat_id = ? AND created_at < datetime('now', '-30 days')
-           ORDER BY created_at ASC LIMIT 500`
-        )
-        .bind(group.chat_id)
-        .all();
-
-      if (oldMessages.length === 0) continue;
-
-      // คำนวณ week range จากข้อความ
-      const weekStart = oldMessages[0].created_at.substring(0, 10);
-      const weekEnd = oldMessages[oldMessages.length - 1].created_at.substring(0, 10);
-
-      // 3. เช็ค idempotency — ถ้า summary ซ้ำ skip
-      const { results: existing } = await env.DB
-        .prepare(
-          `SELECT id FROM summaries
-           WHERE chat_id = ? AND week_start = ? AND week_end = ?`
-        )
-        .bind(group.chat_id, weekStart, weekEnd)
-        .all();
-
-      if (existing.length > 0) {
-        // summary มีอยู่แล้ว ข้ามไปลบข้อความเลย
-      } else {
-        // 4. ส่งให้ Gemini Flash สรุป
-        const conversationText = oldMessages
-          .map(m => {
-            const name = m.username ? `@${m.username}` : m.first_name || "Unknown";
-            return `[${m.created_at}] ${name}: ${m.message_text}`;
-          })
-          .join("\n");
-
-        const summary = await generateSummary(env, group.chat_title || "Unknown", conversationText);
-
-        if (summary) {
-          await env.DB
-            .prepare(
-              `INSERT INTO summaries (chat_id, chat_title, week_start, week_end, summary_text, message_count, summary_type, summary_date)
-               VALUES (?, ?, ?, ?, ?, ?, 'weekly', ?)`
-            )
-            .bind(group.chat_id, group.chat_title, weekStart, weekEnd, summary, oldMessages.length, weekEnd)
-            .run();
-          totalSummaries++;
-        }
-      }
-
-      // 5. ลบข้อความเก่าหลังสรุปเสร็จ (batch 500 × 5 รอบต่อกลุ่ม)
+    for (const group of cleanupGroups) {
+      // ลบเฉพาะข้อความที่วันนั้นมี daily summary แล้ว
       for (let round = 0; round < 5; round++) {
         const result = await env.DB
           .prepare(
             `DELETE FROM messages WHERE id IN (
-               SELECT id FROM messages WHERE chat_id = ? AND created_at < datetime('now', '-30 days') LIMIT 500
+               SELECT m.id FROM messages m
+               WHERE m.chat_id = ? AND m.created_at < datetime('now', '-30 days')
+                 AND date(m.created_at, '+7 hours') IN (
+                   SELECT summary_date FROM summaries
+                   WHERE chat_id = m.chat_id AND summary_type = 'daily' AND summary_date IS NOT NULL
+                 )
+               LIMIT 500
              )`
           )
           .bind(group.chat_id)

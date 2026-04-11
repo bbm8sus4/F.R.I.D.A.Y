@@ -46,7 +46,7 @@ export async function handleReadhtmlCommand(env, message, args) {
       const isDM = message.chat.type === "private";
       let context = "";
       try { context = await getSmartContext(env.DB, message.chat.id, isDM, args); } catch (e) { /* ignore */ }
-      let reply = await askGemini(env, userMessage, context, null);
+      let reply = await askGemini(env, userMessage, context, null, { feature: 'read', chatId: message.chat.id });
       const { cleanReply } = await parseAndExecuteActions(env, reply);
       if (cleanReply) {
         await sendTelegram(env, message.chat.id, cleanReply, message.message_id, true);
@@ -124,7 +124,7 @@ export async function handleReadpdfCommand(env, message, args) {
       const isDM = message.chat.type === "private";
       let context = "";
       try { context = await getSmartContext(env.DB, message.chat.id, isDM, args); } catch (e) { /* ignore */ }
-      let reply = await askGemini(env, userMessage, context, imageData);
+      let reply = await askGemini(env, userMessage, context, imageData, { feature: 'read', chatId: message.chat.id });
       const { cleanReply } = await parseAndExecuteActions(env, reply);
       if (cleanReply) {
         await sendTelegram(env, message.chat.id, cleanReply, message.message_id, true);
@@ -196,7 +196,7 @@ export async function handleReadimgCommand(env, message, args) {
       const isDM = message.chat.type === "private";
       let context = "";
       try { context = await getSmartContext(env.DB, message.chat.id, isDM, args); } catch (e) { /* ignore */ }
-      let reply = await askGemini(env, userMessage, context, imageData);
+      let reply = await askGemini(env, userMessage, context, imageData, { feature: 'read', chatId: message.chat.id });
       const { cleanReply } = await parseAndExecuteActions(env, reply);
       if (cleanReply) {
         await sendTelegram(env, message.chat.id, cleanReply, message.message_id, true);
@@ -346,7 +346,7 @@ export async function handleFileCallback(env, callbackQuery) {
   try {
     await sendTyping(env, chatId);
     const context = await getSmartContext(env.DB, chatId, callbackQuery.message.chat.type === "private", "");
-    const reply = await askGemini(env, prompt, context, imageData);
+    const reply = await askGemini(env, prompt, context, imageData, { feature: 'read', chatId });
     const { cleanReply } = await parseAndExecuteActions(env, reply);
     if (cleanReply) {
       await sendTelegram(env, chatId, cleanReply, null, true);
@@ -395,7 +395,7 @@ export async function handleFileAsk(env, message, cacheId, question) {
   }
 
   const context = await getSmartContext(env.DB, message.chat.id, message.chat.type === "private", "");
-  const reply = await askGemini(env, prompt, context, imageData);
+  const reply = await askGemini(env, prompt, context, imageData, { feature: 'read', chatId: message.chat.id });
   const { cleanReply } = await parseAndExecuteActions(env, reply);
   if (cleanReply) {
     await sendTelegram(env, message.chat.id, cleanReply, message.message_id, true);
@@ -647,7 +647,7 @@ export async function handleReadlinkCallback(env, callbackQuery) {
   try {
     await sendTyping(env, chatId);
     const context = await getSmartContext(env.DB, chatId, callbackQuery.message.chat.type === "private", "");
-    const reply = await askGemini(env, prompts[mode], context, null);
+    const reply = await askGemini(env, prompts[mode], context, null, { feature: 'read', chatId });
     const { cleanReply } = await parseAndExecuteActions(env, reply);
     if (cleanReply) {
       await sendTelegram(env, chatId, cleanReply, null, true);
@@ -678,7 +678,7 @@ export async function handleReadlinkAsk(env, message, cacheId, question) {
   await sendTyping(env, message.chat.id);
   const prompt = `ตอบคำถามเกี่ยวกับเนื้อหาเว็บไซต์นี้:\n\nURL: ${url}\nTitle: ${title || "N/A"}\n\nคำถาม: ${question}\n\n--- เนื้อหา ---\n${body_text}`;
   const context = await getSmartContext(env.DB, message.chat.id, message.chat.type === "private", "");
-  const reply = await askGemini(env, prompt, context, null);
+  const reply = await askGemini(env, prompt, context, null, { feature: 'read', chatId: message.chat.id });
   const { cleanReply } = await parseAndExecuteActions(env, reply);
   if (cleanReply) {
     await sendTelegram(env, message.chat.id, cleanReply, message.message_id, true);

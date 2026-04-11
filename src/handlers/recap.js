@@ -152,7 +152,7 @@ export async function handleRecapCallback(env, callbackQuery) {
 ถ้ามีเรื่องสำคัญที่ต้องติดตามให้ระบุด้วย
 ห้ามใส่ action tags ใดๆ`;
 
-      const aiResponse = await askGemini(env, aiPrompt, contextBlock, null);
+      const aiResponse = await askGemini(env, aiPrompt, contextBlock, null, { feature: 'recap', chatId });
       const cleanResponse = stripHtmlTags(
         aiResponse
           .replace(/\[SEND:[^\]]+\]/g, '')
@@ -351,7 +351,7 @@ export async function handleRecapCallback(env, callbackQuery) {
 เขียนในโทนเป็นมิตร ใช้ภาษาที่เหมาะกับการสื่อสารในกลุ่ม
 ห้ามใส่ action tags ใดๆ`;
 
-      const aiResponse = await askGemini(env, aiPrompt, contextBlock, null);
+      const aiResponse = await askGemini(env, aiPrompt, contextBlock, null, { feature: 'recap', chatId });
       const cleanResponse = stripHtmlTags(
         aiResponse
           .replace(/\[SEND:[^\]]+\]/g, '')
@@ -526,7 +526,7 @@ export async function handleRecapReply(env, message, targetChatId, instruction) 
 ถ้ามีเรื่องสำคัญที่ต้องติดตามให้ระบุด้วย
 ห้ามใส่ action tags ใดๆ`;
 
-    const aiResponse = await askGemini(env, aiPrompt, contextBlock, null);
+    const aiResponse = await askGemini(env, aiPrompt, contextBlock, null, { feature: 'recap', chatId: message.chat.id });
     const cleanResponse = stripHtmlTags(
       aiResponse
         .replace(/\[SEND:[^\]]+\]/g, '')

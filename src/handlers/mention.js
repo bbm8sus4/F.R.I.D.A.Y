@@ -96,7 +96,7 @@ export async function handleMention(env, message, botUsername, text, hasMedia, i
       }
     }
 
-    let reply = await askGemini(env, userMessage, context, imageData);
+    let reply = await askGemini(env, userMessage, context, imageData, { feature: 'mention', chatId: message.chat.id });
 
     // Parse and execute action tags (e.g., [SEND:chat_id:message])
     const { cleanReply, actionsExecuted, hasActionTags } = await parseAndExecuteActions(env, reply);
@@ -215,7 +215,7 @@ export async function handleMemberChat(env, message, botUsername, text, hasMedia
 ${context}
 ---`;
 
-    const model = env.GEMINI_MODEL || "gemini-2.5-pro";
+    const model = "gemini-2.5-flash";
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${env.GEMINI_API_KEY}`;
 
     // Build contents array — multi-turn when replying to bot
@@ -257,7 +257,7 @@ ${context}
       tools: [{ google_search: {} }],
       generationConfig: {
         maxOutputTokens: 8192,
-        thinkingConfig: { thinkingBudget: 2048 },
+        thinkingConfig: { thinkingBudget: 1024 },
       },
     });
 

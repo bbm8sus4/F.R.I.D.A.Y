@@ -328,7 +328,7 @@ export async function handleSendReply(env, message, targetChatId, msgText) {
       botName: env.BOT_NAME || "Friday",
     });
 
-    const aiResponse = await askGemini(env, aiPrompt, context, null);
+    const aiResponse = await askGemini(env, aiPrompt, context, null, { feature: 'send', chatId: message.chat.id });
     const cleanMessage = cleanAiResponse(aiResponse);
 
     // Store draft + instruction in pending_sends
@@ -382,7 +382,7 @@ export async function handleSendEditReply(env, message, editFeedback) {
       botName: env.BOT_NAME || "Friday",
     });
 
-    const aiResponse = await askGemini(env, aiPrompt, context, null);
+    const aiResponse = await askGemini(env, aiPrompt, context, null, { feature: 'send', chatId: message.chat.id });
     const cleanMessage = cleanAiResponse(aiResponse);
 
     const newRevisionCount = pending.revision_count + 1;

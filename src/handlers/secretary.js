@@ -157,7 +157,7 @@ export async function handleSecretary(env, message, botUsername, text, hasMedia,
       }
       // Fall through to askGemini (has Google Search) for general questions
       try {
-        const reply = await askGemini(env, userMessage, context, imageData);
+        const reply = await askGemini(env, userMessage, context, imageData, { feature: 'secretary_fallback', chatId: message.chat.id });
         if (reply) {
           await sendTelegram(env, message.chat.id, reply, message.message_id, true);
           return;
@@ -239,7 +239,7 @@ export async function handleSecretary(env, message, botUsername, text, hasMedia,
       // model a second time can exceed the Worker waitUntil budget.
       if (!result.text) {
         try {
-          const reply = await askGemini(env, userMessage, context, imageData);
+          const reply = await askGemini(env, userMessage, context, imageData, { feature: 'secretary_fallback', chatId: message.chat.id });
           if (reply) {
             await sendTelegram(env, message.chat.id, reply, message.message_id, true);
             return;

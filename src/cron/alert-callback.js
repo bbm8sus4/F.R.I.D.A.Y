@@ -184,7 +184,7 @@ ${conversation}`;
 
     await sendTyping(env, chatId);
     const context = await getSmartContext(env.DB, groupChatId, false, "");
-    const reply = await askGemini(env, prompt, context, null);
+    const reply = await askGemini(env, prompt, context, null, { feature: 'alert_callback', chatId: groupChatId });
     const { cleanReply } = await parseAndExecuteActions(env, reply);
     if (cleanReply) {
       await sendTelegram(env, chatId, cleanReply, null, true);

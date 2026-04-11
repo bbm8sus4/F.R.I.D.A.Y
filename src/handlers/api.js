@@ -206,6 +206,48 @@ export async function handleApiRequest(request, url, env) {
       }
     }
 
+    // GET /api/costs — AI usage cost analytics
+    if (path === "/costs" && method === "GET") {
+      const safeQ = (q) => q.catch(() => ({ results: [] }));
+      const [summary, byFeature, daily, byModel] = await Promise.all([
+        env.DB.prepare(
+          `SELECT
+            SUM(CASE WHEN created_at > datetime('now', '-1 day') THEN input_tokens ELSE 0 END) as today_input,
+            SUM(CASE WHEN created_at > datetime('now', '-1 day') THEN output_tokens ELSE 0 END) as today_output,
+            SUM(CASE WHEN created_at > datetime('now', '-1 day') THEN 1 ELSE 0 END) as today_calls,
+            SUM(CASE WHEN created_at > datetime('now', '-7 days') THEN input_tokens ELSE 0 END) as week_input,
+            SUM(CASE WHEN created_at > datetime('now', '-7 days') THEN output_tokens ELSE 0 END) as week_output,
+            SUM(CASE WHEN created_at > datetime('now', '-7 days') THEN 1 ELSE 0 END) as week_calls,
+            SUM(input_tokens) as month_input,
+            SUM(output_tokens) as month_output,
+            COUNT(*) as month_calls
+           FROM ai_log WHERE created_at > datetime('now', '-30 days')`
+        ).first(),
+        safeQ(env.DB.prepare(
+          `SELECT feature, model, SUM(input_tokens) as input_tokens, SUM(output_tokens) as output_tokens, COUNT(*) as calls
+           FROM ai_log WHERE created_at > datetime('now', '-30 days')
+           GROUP BY feature, model ORDER BY output_tokens DESC`
+        ).all()),
+        safeQ(env.DB.prepare(
+          `SELECT date(created_at, '+7 hours') as day, model, SUM(input_tokens) as input_tokens, SUM(output_tokens) as output_tokens, COUNT(*) as calls
+           FROM ai_log WHERE created_at > datetime('now', '-14 days')
+           GROUP BY day, model ORDER BY day`
+        ).all()),
+        safeQ(env.DB.prepare(
+          `SELECT model, SUM(input_tokens) as input_tokens, SUM(output_tokens) as output_tokens, COUNT(*) as calls
+           FROM ai_log WHERE created_at > datetime('now', '-30 days')
+           GROUP BY model`
+        ).all()),
+      ]);
+
+      return new Response(JSON.stringify({
+        summary: summary || {},
+        byFeature: byFeature.results || [],
+        daily: daily.results || [],
+        byModel: byModel.results || [],
+      }), { headers });
+    }
+
     return new Response(JSON.stringify({ error: "Not found" }), { status: 404, headers });
   } catch (err) {
     console.error("API error:", err?.message, err?.stack);

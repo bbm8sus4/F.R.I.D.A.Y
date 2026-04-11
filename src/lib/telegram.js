@@ -63,7 +63,7 @@ export async function trackBotMessage(env, chatId, messageId, textPreview) {
 export function getReplyKeyboardMarkup(env) {
   return {
     keyboard: [
-      [{ text: "Tasks" }, { text: "Memories" }, { text: "Summary" }, { text: "Recap" }],
+      [{ text: "Tasks" }, { text: "Memories" }, { text: "Costs" }, { text: "Recap" }],
       [{ text: "Send" }, { text: "Company" }, { text: "Delete" }, { text: "Calendar" }],
     ],
     resize_keyboard: true,

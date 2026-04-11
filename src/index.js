@@ -25,15 +25,12 @@ import { handleCompanyCommand, handleCompanyCallback, handleCompanyReply } from 
 import { handleCalendarCommand, handleCalendarCallback } from './handlers/calendar.js';
 
 // === Cron imports ===
-import { proactiveAlert } from './cron/proactive-alert.js';
-import { proactiveInsightAlert } from './cron/proactive-insight.js';
 import { handleProactiveAlertCallback } from './cron/alert-callback.js';
 import { summarizeAndCleanup } from './cron/summarize-cleanup.js';
 import { calendarReminder } from './cron/calendar-reminder.js';
-import { dailyDigest } from './cron/daily-digest.js';
 import { conversationCleanup } from './cron/conversation-cleanup.js';
-import { taskReminder } from './cron/task-reminder.js';
 import { sendScheduledMessages } from './cron/scheduled-messages.js';
+import { summaryAlert } from './cron/summary-alert.js';
 
 // In-memory throttle for urgent real-time alerts (per-group, 30 min cooldown)
 const urgentThrottleMap = new Map();
@@ -265,6 +262,9 @@ export default {
                 system:   "🔴 ระบบมีปัญหาค่ะ!",
                 data:     "🔴 ข้อมูลอาจเสียหายค่ะ!",
                 customer: "🔴 ลูกค้ามีปัญหาค่ะ!",
+                money:    "🔴 เงินมีปัญหาค่ะ!",
+                hr:       "🔴 มีคนลาออกค่ะ!",
+                safety:   "🔴 มีอุบัติเหตุค่ะ!",
               };
               const urgentHeader = urgentHeaders[urgentMatch.type] || "🔴 URGENT Alert";
               const urgentMsg = `<b>${urgentHeader}</b>\n\n👤 ${who}: ${esc(text.substring(0, 300))}\n\n📁 กลุ่ม: ${group}`;
@@ -315,7 +315,7 @@ export default {
           "Send": "/send",
           "Recap": "/recap",
           "Tasks": "/tasks",
-          "Summary": "/summary",
+          "Costs": "/dashboard",
           "Company": "/company",
           "Calendar": "/cal",
         };
@@ -526,7 +526,7 @@ export default {
 
   // ===== Cron Trigger — Proactive Alert + Cleanup ทุก 3 ชม. =====
   async scheduled(event, env, ctx) {
-    const jobs = [proactiveAlert(env), proactiveInsightAlert(env), summarizeAndCleanup(env), calendarReminder(env), dailyDigest(env), conversationCleanup(env), taskReminder(env), sendScheduledMessages(env)];
+    const jobs = [summarizeAndCleanup(env), calendarReminder(env), conversationCleanup(env), sendScheduledMessages(env), summaryAlert(env)];
     ctx.waitUntil(
       Promise.allSettled(jobs).then(async (results) => {
         const failed = results.filter(r => r.status === 'rejected');

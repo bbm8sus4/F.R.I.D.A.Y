@@ -49,7 +49,9 @@ class GeminiProvider {
 
     // Add tools if provided
     if (tools && tools.length > 0) {
-      body.tools = [{ function_declarations: tools }];
+      body.tools = [{ function_declarations: tools }, { google_search: {} }];
+    } else {
+      body.tools = [{ google_search: {} }];
     }
 
     let response;

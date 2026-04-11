@@ -5,13 +5,14 @@ const TABS = [
   { id: "tasks", icon: "📋", label: "Tasks" },
   { id: "alerts", icon: "🔔", label: "Alerts" },
   { id: "summaries", icon: "📝", label: "Summaries" },
+  { id: "costs", icon: "💰", label: "Costs" },
 ];
 
 export default function Layout({ tab, onTabChange, children }) {
   return (
     <div className="app">
       <div className="header">
-        <h1>Friday Dashboard</h1>
+        <h1>{new URLSearchParams(window.location.search).get("api")?.includes("daisy") ? "Daisy" : new URLSearchParams(window.location.search).get("api")?.includes("sigma") ? "Sigma" : "Friday"} Dashboard</h1>
       </div>
       {children}
       <div className="bottom-nav">

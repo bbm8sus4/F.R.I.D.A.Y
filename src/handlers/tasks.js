@@ -7,8 +7,11 @@ export async function handleDashboardCommand(env, message) {
     await sendTelegram(env, message.chat.id, "ยังไม่ได้ตั้งค่า Dashboard ค่ะ", message.message_id);
     return;
   }
-  await sendTelegramWithKeyboard(env, message.chat.id, `📊 ${env.BOT_NAME || "Friday"} Dashboard`, null, [
-    [{ text: "Open Dashboard", web_app: { url: dashUrl } }],
+  const botName = env.BOT_NAME || "Friday";
+  const workerUrl = env.WORKER_URL || "";
+  const url = workerUrl ? `${dashUrl}?api=${encodeURIComponent(workerUrl)}` : dashUrl;
+  await sendTelegramWithKeyboard(env, message.chat.id, `📊 ${botName} Dashboard`, null, [
+    [{ text: "Open Dashboard", web_app: { url } }],
   ]);
 }
 

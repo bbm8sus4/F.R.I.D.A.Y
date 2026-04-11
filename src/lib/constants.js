@@ -1,9 +1,12 @@
 // ===== Urgent keyword patterns (real-time alert, no AI) =====
 export const URGENT_PATTERNS = [
   { pattern: /ด่วน(มาก)?|urgent|emergency|asap/i, type: "urgent" },
-  { pattern: /ระบบ.*(ล่ม|พัง|crash|down)/i, type: "system" },
-  { pattern: /เสียหาย|data\s*loss/i, type: "data" },
-  { pattern: /ลูกค้า.*(โกรธ|ร้องเรียน|complain)/i, type: "customer" },
+  { pattern: /ระบบ.*(ล่ม|พัง|crash|down)|server.*(down|error)/i, type: "system" },
+  { pattern: /เสียหาย|data\s*loss|ข้อมูล.*(หาย|สูญ)/i, type: "data" },
+  { pattern: /ลูกค้า.*(โกรธ|ร้องเรียน|complain|ไม่พอใจ)/i, type: "customer" },
+  { pattern: /เงิน.*(ขาด|หาย|ไม่ตรง|คลาดเคลื่อน)|ยอด.*(ไม่ตรง|ขาด)/i, type: "money" },
+  { pattern: /ลาออก|resign/i, type: "hr" },
+  { pattern: /อุบัติเหตุ|บาดเจ็บ|accident|injury/i, type: "safety" },
 ];
 
 export const MAX_PDF_SIZE = 10 * 1024 * 1024; // 10MB
