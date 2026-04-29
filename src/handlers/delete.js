@@ -2,6 +2,10 @@ import { sendTelegram, sendTelegramWithKeyboard } from "../lib/telegram.js";
 
 export async function handleDeleteCommand(env, message) {
   try {
+    // Boss-only: /delete manages bot messages across every group, must not be invokable by members.
+    if (message.from.id !== Number(env.BOSS_USER_ID)) {
+      return;
+    }
     if (message.chat.type !== "private") {
       await sendTelegram(env, message.chat.id, "คำสั่ง /delete ใช้ได้เฉพาะใน DM เท่านั้นค่ะนาย", message.message_id);
       return;
@@ -45,6 +49,20 @@ export async function handleDeleteCommand(env, message) {
 }
 
 export async function handleDeleteCallback(env, callbackQuery) {
+  // Defense-in-depth: even if the global MEMBER_CALLBACKS gate is bypassed,
+  // refuse any del: callback that isn't from the boss.
+  if (callbackQuery.from.id !== Number(env.BOSS_USER_ID)) {
+    await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/answerCallbackQuery`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        callback_query_id: callbackQuery.id,
+        text: "ฟังก์ชันนี้สำหรับผู้ดูแลระบบเท่านั้นค่ะ",
+        show_alert: true,
+      }),
+    }).catch(e => console.error("answerCallbackQuery (del non-boss) error:", e.message));
+    return;
+  }
   const parts = callbackQuery.data.split(":");
   const action = parts[1];
   try {

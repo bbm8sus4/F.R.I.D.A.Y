@@ -51,6 +51,14 @@ function isRateLimited(userId) {
   return entry.count > RATE_LIMIT;
 }
 
+// Constant-time string comparison — prevents timing attacks on the webhook secret.
+function timingSafeEqual(a, b) {
+  if (typeof a !== "string" || typeof b !== "string" || a.length !== b.length) return false;
+  let mismatch = 0;
+  for (let i = 0; i < a.length; i++) mismatch |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return mismatch === 0;
+}
+
 export default {
   // ===== Webhook Handler =====
   async fetch(request, env, ctx) {
@@ -63,6 +71,20 @@ export default {
 
     if (request.method !== "POST") {
       return new Response(`${env.BOT_NAME || "Friday"} is watching.`, { status: 200 });
+    }
+
+    // === Telegram webhook secret validation ===
+    // Without this, anyone who learns the Worker URL can POST forged updates
+    // and impersonate the boss. Set via: wrangler secret put TELEGRAM_WEBHOOK_SECRET
+    // and register on Telegram via setWebhook?secret_token=<same value>.
+    if (!env.TELEGRAM_WEBHOOK_SECRET) {
+      console.error("CRITICAL: TELEGRAM_WEBHOOK_SECRET unset — refusing to accept webhooks");
+      return new Response("Server misconfigured", { status: 500 });
+    }
+    const providedSecret = request.headers.get("X-Telegram-Bot-Api-Secret-Token") || "";
+    if (!timingSafeEqual(providedSecret, env.TELEGRAM_WEBHOOK_SECRET)) {
+      console.warn(`Unauthorized webhook from ${request.headers.get("CF-Connecting-IP") || "unknown"}`);
+      return new Response("Unauthorized", { status: 401 });
     }
 
     let update;

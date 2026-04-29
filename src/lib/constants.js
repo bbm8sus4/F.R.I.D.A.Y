@@ -12,15 +12,17 @@ export const URGENT_PATTERNS = [
 export const MAX_PDF_SIZE = 10 * 1024 * 1024; // 10MB
 
 // ===== Multi-user access control =====
+// /delete and del: callbacks are boss-only — they manage bot messages across
+// every group the bot is in, so members must NOT be able to invoke them.
 export const MEMBER_COMMANDS = new Set([
   "/task", "/tasks", "/done", "/cancel",
   "/readlink", "/readpdf", "/readhtml", "/readimg", "/readvoice",
   "/summary", "/menu", "/start",
-  "/recap", "/delete",
+  "/recap",
   "/cal",
 ]);
 
-export const MEMBER_CALLBACKS = new Set(["tk:", "rl:", "fc:", "recap:", "del:", "sm:", "cl:", "sec:"]);
+export const MEMBER_CALLBACKS = new Set(["tk:", "rl:", "fc:", "recap:", "sm:", "cl:", "sec:"]);
 
 export const SECRETARY_CALLBACKS = new Set(["sec:"]);
 
