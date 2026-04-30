@@ -200,6 +200,20 @@ export async function handleCalendarCallback(env, callbackQuery) {
 
   try {
     if (data.startsWith("cl:del:")) {
+      // Boss-only: there is one shared Google Calendar (the boss's), so
+      // deleting events must not be invokable by members.
+      if (callbackQuery.from.id !== Number(env.BOSS_USER_ID)) {
+        await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/answerCallbackQuery`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            callback_query_id: callbackQuery.id,
+            text: "ฟังก์ชันนี้สำหรับผู้ดูแลระบบเท่านั้นค่ะ",
+            show_alert: true,
+          }),
+        }).catch(e => console.error("cl non-boss answer error:", e.message));
+        return;
+      }
       const eventId = data.slice(7);
       await deleteEvent(env, eventId);
 

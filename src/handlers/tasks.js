@@ -211,11 +211,31 @@ export async function handleCancelCommand(env, message, args) {
   }
 }
 
+// Mutating actions need boss-only gating until the schema gains real per-user
+// ownership wiring (0020_extend_tasks.sql added created_by_id/assignee_id but
+// writes don't populate them — see security_audit_2026-04-29.md).
+const MUTATING_TASK_ACTIONS = new Set(["d", "x", "u", "del"]);
+
 export async function handleTaskCallback(env, callbackQuery) {
   const chatId = callbackQuery.message.chat.id;
   const messageId = callbackQuery.message.message_id;
   const parts = callbackQuery.data.split(":");
   const action = parts[1]; // "d" (done), "x" (cancel), "h" (history), "b" (back), "u" (undo), "del" (delete)
+
+  // Boss-only on mutating actions — without this any allowed member could press
+  // tk:del:<id> and wipe the boss's tasks (same shape as the del: callback IDOR).
+  if (MUTATING_TASK_ACTIONS.has(action) && callbackQuery.from.id !== Number(env.BOSS_USER_ID)) {
+    await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/answerCallbackQuery`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        callback_query_id: callbackQuery.id,
+        text: "ฟังก์ชันนี้สำหรับผู้ดูแลระบบเท่านั้นค่ะ",
+        show_alert: true,
+      }),
+    }).catch(e => console.error("tk non-boss answer error:", e.message));
+    return;
+  }
 
   // Answer callback immediately
   await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/answerCallbackQuery`, {
