@@ -43,8 +43,18 @@ GEMINI_FALLBACK_MODEL = "gemini-2.5-flash"
 GEMINI_TEMPERATURE = "0.2"
 GEMINI_MAX_RETRIES = "2"
 
+# === Daisy DISABLED 2026-04-30 ===
+# Cron explicitly emptied to stop Gemini billing. Worker code, D1 database,
+# and all wrangler secrets are preserved for fast resurrection.
+#
+# To resurrect Daisy:
+#   1. Restore: crons = ["0 */3 * * *"] in [env.daisy.triggers] below
+#   2. npm run deploy:daisy
+#   3. curl -X POST "https://api.telegram.org/bot<DAISY_TOKEN>/setWebhook" \
+#        --data-urlencode "url=https://daisy-ai-bot.friday-bot.workers.dev/" \
+#        --data-urlencode "secret_token=<TELEGRAM_WEBHOOK_SECRET value>"
 [env.daisy.triggers]
-crons = ["0 */3 * * *"]
+crons = []
 
 # --- Sigma ---
 [env.sigma]
