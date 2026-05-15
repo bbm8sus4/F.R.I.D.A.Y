@@ -83,7 +83,7 @@ export async function sendTelegram(env, chatId, text, replyToMessageId, useHtml 
     link_preview_options: { is_disabled: true },
   };
   if (useHtml) baseBody.parse_mode = "HTML";
-  if (env._replyKeyboard) baseBody.reply_markup = env._replyKeyboard;
+  if (env._replyKeyboard && chatId > 0) baseBody.reply_markup = env._replyKeyboard;
 
   // Helper: parse response and track bot message
   const trackRes = async (res, preview) => {

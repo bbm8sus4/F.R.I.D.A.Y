@@ -23,6 +23,7 @@ import { handleAllowCommand, handleRevokeCommand, handleUsersCommand } from './h
 import { handleSummaryCommand, handleSummaryCallback, handleSummaryCustomReply } from './handlers/summary.js';
 import { handleCompanyCommand, handleCompanyCallback, handleCompanyReply } from './handlers/company.js';
 import { handleCalendarCommand, handleCalendarCallback } from './handlers/calendar.js';
+import { handleApicostCommand } from './handlers/apicost.js';
 
 // === Cron imports ===
 import { handleProactiveAlertCallback } from './cron/alert-callback.js';
@@ -403,13 +404,14 @@ export default {
           "/tasks": () => handleTasksCommand(env, message),
           "/done": () => handleDoneCommand(env, message, parsed.args),
           "/cancel": () => handleCancelCommand(env, message, parsed.args),
-          "/menu": () => role === "boss" ? sendReplyKeyboard(env, message.chat.id, message.message_id) : sendMemberReplyKeyboard(env, message.chat.id, message.from.first_name, message.message_id),
-          "/start": () => role === "boss" ? sendReplyKeyboard(env, message.chat.id, message.message_id) : sendMemberReplyKeyboard(env, message.chat.id, message.from.first_name, message.message_id),
+          "/menu": () => isDM ? (role === "boss" ? sendReplyKeyboard(env, message.chat.id, message.message_id) : sendMemberReplyKeyboard(env, message.chat.id, message.from.first_name, message.message_id)) : null,
+          "/start": () => isDM ? (role === "boss" ? sendReplyKeyboard(env, message.chat.id, message.message_id) : sendMemberReplyKeyboard(env, message.chat.id, message.from.first_name, message.message_id)) : null,
           "/allow": () => handleAllowCommand(env, message, parsed.args),
           "/revoke": () => handleRevokeCommand(env, message, parsed.args),
           "/users": () => handleUsersCommand(env, message),
           "/company": () => handleCompanyCommand(env, message),
           "/cal": () => handleCalendarCommand(env, message, parsed.args),
+          "/apicost": () => handleApicostCommand(env, message),
         };
 
         const handler = handlers[parsed.cmd];
